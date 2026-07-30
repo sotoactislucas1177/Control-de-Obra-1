@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Control de Obra — P67</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.css">
+<script src="https://cdn.jsdelivr.net/npm/frappe-gantt@0.6.1/dist/frappe-gantt.min.js"></script>
+</head>
+<body>
+<div class="app-shell">
+  <nav class="sidebar">
+    <div class="brand">
+      <span class="brand-bar"></span>
+      <div>
+        <div class="brand-title">Control de Obra</div>
+        <div class="brand-sub" id="brand-project">P67</div>
+      </div>
+    </div>
+    <ul class="nav-list">
+      <li data-view="dashboard" class="nav-item active">Panel general</li>
+      <li data-view="compras" class="nav-item">Cargar compra</li>
+      <li data-view="materiales" class="nav-item">Materiales</li>
+      <li data-view="rubros" class="nav-item">Rubros</li>
+      <li data-view="cronograma" class="nav-item">Cronograma</li>
+      <li data-view="proyecto" class="nav-item">Datos del proyecto</li>
+    </ul>
+  </nav>
+
+  <main class="content">
+
+    <section id="view-dashboard" class="view active">
+      <header class="view-header">
+        <h1>Panel general</h1>
+        <p class="muted">Estado económico de la obra, en tiempo real.</p>
+      </header>
+      <div class="kpi-grid" id="kpi-grid"></div>
+      <div class="chart-grid">
+        <div class="card">
+          <h3>Proyectado vs. gastado por categoría</h3>
+          <canvas id="chart-categoria"></canvas>
+        </div>
+        <div class="card">
+          <h3>Materiales con mayor desvío</h3>
+          <canvas id="chart-desvio"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-compras" class="view">
+      <header class="view-header">
+        <h1>Cargar compra de material</h1>
+        <p class="muted">Registrá cada factura: material, cantidad, costo, lugar y número.</p>
+      </header>
+      <form class="card form-card" id="form-compra">
+        <div class="form-row">
+          <label>Fecha
+            <input type="date" name="fecha" required>
+          </label>
+          <label>Material
+            <input list="lista-materiales" name="material_codigo" placeholder="Buscar por código o nombre..." required autocomplete="off">
+            <datalist id="lista-materiales"></datalist>
+          </label>
+        </div>
+        <div class="form-row">
+          <label>Cantidad comprada
+            <input type="number" step="any" name="cantidad" required>
+          </label>
+          <label>Costo total de la factura ($)
+            <input type="number" step="any" name="costo_total" required>
+          </label>
+        </div>
+        <div class="form-row">
+          <label>Lugar de compra
+            <input type="text" name="lugar_compra" placeholder="Ej: Corralón Central">
+          </label>
+          <label>N° de factura
+            <input type="text" name="factura_numero" placeholder="Ej: 0001-00012345">
+          </label>
+        </div>
+        <button type="submit" class="btn-primary">Guardar compra</button>
+        <span class="form-msg" id="form-compra-msg"></span>
+      </form>
+
+      <div class="card">
+        <h3>Últimas compras cargadas</h3>
+        <div class="table-wrap">
+          <table id="tabla-compras">
+            <thead>
+              <tr><th>Fecha</th><th>Material</th><th>Cant.</th><th>Costo total</th><th>Lugar</th><th>Factura</th><th></th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-materiales" class="view">
+      <header class="view-header">
+        <h1>Materiales</h1>
+        <p class="muted">Catálogo proyectado del proyecto (referencia).</p>
+      </header>
+      <div class="card">
+        <input type="search" id="buscador-materiales" placeholder="Buscar material..." class="search-input">
+        <div class="table-wrap">
+          <table id="tabla-materiales">
+            <thead>
+              <tr><th>Código</th><th>Descripción</th><th>Unidad</th><th>Categoría</th><th>Precio unit.</th><th>Cant. proyectada</th><th>Monto proyectado</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-rubros" class="view">
+      <header class="view-header">
+        <h1>Rubros y presupuesto</h1>
+        <p class="muted">Desglose del presupuesto contratado por rubro.</p>
+      </header>
+      <div class="card">
+        <div class="table-wrap">
+          <table id="tabla-rubros">
+            <thead>
+              <tr><th>Código</th><th>Rubro</th><th>Presupuestado</th><th>Materiales</th><th>Mano de obra</th><th>Subcontratos</th><th>% incidencia</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-cronograma" class="view">
+      <header class="view-header">
+        <h1>Cronograma — camino crítico</h1>
+        <p class="muted">Las barras rojas son tareas críticas (sin margen). Hacé clic en una tarea para editarla.</p>
+      </header>
+      <div class="card">
+        <div id="gantt-target"></div>
+      </div>
+      <div class="card form-card">
+        <h3 id="tarea-form-title">Agregar tarea</h3>
+        <form id="form-tarea">
+          <input type="hidden" name="id">
+          <div class="form-row">
+            <label>Código (número)
+              <input type="number" name="codigo" required>
+            </label>
+            <label>Nombre de la tarea
+              <input type="text" name="nombre" required>
+            </label>
+          </div>
+          <div class="form-row">
+            <label>Duración (semanas)
+              <input type="number" step="any" name="duracion_semanas" required>
+            </label>
+            <label>Predecesora 1 (código)
+              <input type="number" name="predecesora1">
+            </label>
+            <label>Predecesora 2 (código)
+              <input type="number" name="predecesora2">
+            </label>
+          </div>
+          <button type="submit" class="btn-primary">Guardar tarea</button>
+          <button type="button" class="btn-secondary" id="btn-cancelar-tarea" style="display:none">Cancelar edición</button>
+          <button type="button" class="btn-danger" id="btn-borrar-tarea" style="display:none">Eliminar tarea</button>
+          <span class="form-msg" id="form-tarea-msg"></span>
+        </form>
+      </div>
+    </section>
+
+    <section id="view-proyecto" class="view">
+      <header class="view-header">
+        <h1>Datos del proyecto</h1>
+      </header>
+      <form class="card form-card" id="form-proyecto">
+        <div class="form-row">
+          <label>Nombre del proyecto <input type="text" name="nombre"></label>
+          <label>Ubicación <input type="text" name="ubicacion"></label>
+        </div>
+        <div class="form-row">
+          <label>Propietario / Inversor <input type="text" name="propietario"></label>
+          <label>Empresa contratista <input type="text" name="contratista"></label>
+        </div>
+        <div class="form-row">
+          <label>Fecha de inicio <input type="date" name="fecha_inicio"></label>
+          <label>Moneda <input type="text" name="moneda"></label>
+        </div>
+        <div class="form-row">
+          <label>Responsable del control <input type="text" name="responsable"></label>
+          <label>Estado general <input type="text" name="estado"></label>
+        </div>
+        <button type="submit" class="btn-primary">Guardar datos</button>
+        <span class="form-msg" id="form-proyecto-msg"></span>
+      </form>
+    </section>
+
+  </main>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>
