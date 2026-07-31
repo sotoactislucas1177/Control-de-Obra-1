@@ -31,8 +31,86 @@ function onViewShown(view) {
   if (view === 'compras') loadCompras();
   if (view === 'materiales') loadMateriales();
   if (view === 'rubros') loadRubros();
+  if (view === 'computo') loadComputo();
   if (view === 'cronograma') loadCronograma();
   if (view === 'proyecto') loadProyecto();
+}
+
+// ---------------- Cómputo por ítem ----------------
+let computoCache = [];
+
+async function loadComputo() {
+  const { items } = await api('/api/computo');
+  computoCache = items;
+  renderComputoLista(items);
+}
+
+function renderComputoLista(items) {
+  const cont = $('#computo-lista');
+  if (!items.length) {
+    cont.innerHTML = '<p class="muted">Todavía no se importó el cómputo por ítem. Subilo desde "Panel general" → "Archivos fuente del proyecto".</p>';
+    return;
+  }
+  cont.innerHTML = items.map((it) => `
+    <div class="computo-item" data-codigo="${it.codigo}">
+      <div class="computo-item-header">
+        <div class="computo-item-titulo">
+          <span class="computo-codigo">${it.codigo}</span>
+          <span class="computo-desc">${it.descripcion}</span>
+        </div>
+        <div class="computo-meta">
+          <span class="pill unidad">${it.unidad || ''}</span>
+          <span class="computo-costo">${money(it.costo_costo)}</span>
+          <span class="computo-caret">▾</span>
+        </div>
+      </div>
+      <div class="computo-item-body"></div>
+    </div>`).join('');
+
+  $$('.computo-item-header').forEach((el) => {
+    el.addEventListener('click', () => {
+      const item = el.closest('.computo-item');
+      const codigo = item.dataset.codigo;
+      const body = item.querySelector('.computo-item-body');
+      const abierto = item.classList.toggle('open');
+      if (abierto && !body.dataset.rendered) {
+        const found = computoCache.find((x) => x.codigo === codigo);
+        body.innerHTML = renderComputoCategorias(found.categorias);
+        body.dataset.rendered = '1';
+      }
+    });
+  });
+}
+
+function renderComputoCategorias(categorias) {
+  return categorias.map((c) => `
+    <div class="computo-categoria">
+      <div class="computo-categoria-nombre">${c.codigo} — ${c.nombre}</div>
+      <div class="table-wrap">
+        <table class="computo-tabla">
+          <thead><tr><th>Material</th><th>Unidad</th><th>Cant.</th><th>Precio unit.</th><th>Parcial</th></tr></thead>
+          <tbody>
+            ${c.materiales.map((m) => `
+              <tr>
+                <td>${m.descripcion}</td>
+                <td>${m.unidad}</td>
+                <td>${m.cantidad}</td>
+                <td>${money(m.precio_unitario)}</td>
+                <td>${money(m.parcial)}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>`).join('');
+}
+
+function setupBuscadorComputo() {
+  $('#buscador-computo').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    const filtrados = computoCache.filter((it) =>
+      it.descripcion.toLowerCase().includes(q) || it.codigo.toLowerCase().includes(q));
+    renderComputoLista(filtrados);
+  });
 }
 
 // ---------------- Gráficos (canvas nativo, sin librerías externas) ----------------
@@ -318,7 +396,6 @@ function handleArchivoUpload(input) {
       avisos.style.color = 'var(--red)';
     }
   };
-  // los .txt de este proyecto suelen venir en windows-1252 (con tildes/ñ), no UTF-8
   reader.readAsText(file, 'windows-1252');
 }
 
@@ -613,6 +690,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupNav();
   setupFormCompra();
   setupBuscadorMateriales();
+  setupBuscadorComputo();
   setupFormTarea();
   setupFormRubro();
   setupFormProyecto();

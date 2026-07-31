@@ -330,3 +330,54 @@ tr:hover td { background: #FAFBFF; }
   font-size: 12px;
   color: var(--amber);
 }
+
+/* ---------- Cómputo por ítem ---------- */
+.computo-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+
+.computo-item-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  cursor: pointer;
+  background: #FBFCFE;
+  flex-wrap: wrap;
+}
+.computo-item-header:hover { background: #F2F5FC; }
+
+.computo-item-titulo { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.computo-codigo { font-family: "Consolas", monospace; font-size: 12px; color: var(--muted); font-weight: 700; }
+.computo-desc { font-size: 14px; font-weight: 600; color: var(--navy); }
+
+.computo-meta { display: flex; align-items: center; gap: 12px; }
+.computo-costo { font-size: 14px; font-weight: 700; color: var(--navy); }
+.computo-caret { color: var(--muted); transition: transform 0.15s ease; }
+.computo-item.open .computo-caret { transform: rotate(180deg); }
+
+.pill.unidad { background: var(--border); color: var(--text); }
+
+.computo-item-body {
+  display: none;
+  padding: 4px 16px 14px 16px;
+  border-top: 1px solid var(--border);
+}
+.computo-item.open .computo-item-body { display: block; }
+
+.computo-categoria { margin-top: 12px; }
+.computo-categoria-nombre {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--navy-light);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 6px;
+}
+
+.computo-tabla { font-size: 12px; }
+.computo-tabla th, .computo-tabla td { padding: 6px 10px; }
