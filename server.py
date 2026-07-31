@@ -1,8 +1,3 @@
-"""
-Servidor de la app de seguimiento de obra. Sin frameworks externos (solo
-librería estándar de Python) para que corra igual en el sandbox de
-desarrollo y en el hosting, sin depender de instalar nada.
-"""
 import json
 import os
 import re
@@ -30,9 +25,8 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "ObraApp/1.0"
 
     def log_message(self, fmt, *args):
-        pass  # silencioso; usamos prints propios si hace falta debug
+        pass
 
-    # ---------- helpers ----------
     def _send_json(self, payload, status=200):
         body = json.dumps(payload, default=json_default, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -76,7 +70,6 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    # ---------- ruteo ----------
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -103,6 +96,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.get_cronograma()
         if path == "/api/archivos":
             return self.get_archivos()
+        if path == "/api/computo":
+            return self.get_computo()
         m = re.match(r"^/api/archivos/(.+)$", path)
         if m:
             return self.get_archivo(unquote(m.group(1)))
@@ -143,7 +138,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.delete_tarea(int(m.group(1)))
         return self._send_error_json("Ruta no encontrada", 404)
 
-    # ---------- endpoints: proyecto ----------
     def get_proyecto(self):
         conn = db.get_conn()
         row = conn.execute("SELECT * FROM proyecto WHERE id = 1").fetchone()
@@ -154,8 +148,6 @@ class Handler(BaseHTTPRequestHandler):
         data = self._read_json_body()
         campos = ["nombre", "ubicacion", "propietario", "contratista", "fecha_inicio",
                   "moneda", "responsable", "version", "estado"]
-        # actualizacion parcial: solo se tocan los campos que vinieron en el body,
-        # para no borrar datos (ej. version) que el formulario no incluye
         campos_presentes = [c for c in campos if c in data]
         if not campos_presentes:
             return self.get_proyecto()
@@ -167,7 +159,6 @@ class Handler(BaseHTTPRequestHandler):
         conn.close()
         self.get_proyecto()
 
-    # ---------- endpoints: rubros ----------
     def get_rubros(self):
         conn = db.get_conn()
         rows = db.rows_to_dicts(conn.execute("SELECT * FROM rubros ORDER BY codigo").fetchall())
@@ -195,14 +186,12 @@ class Handler(BaseHTTPRequestHandler):
         conn.close()
         self.get_rubros()
 
-    # ---------- endpoints: materiales ----------
     def get_materiales(self):
         conn = db.get_conn()
         rows = db.rows_to_dicts(conn.execute("SELECT * FROM materiales ORDER BY descripcion").fetchall())
         conn.close()
         self._send_json({"materiales": rows})
 
-    # ---------- endpoints: compras ----------
     def get_compras(self):
         conn = db.get_conn()
         rows = db.rows_to_dicts(conn.execute(
@@ -242,7 +231,6 @@ class Handler(BaseHTTPRequestHandler):
         conn.close()
         self.get_compras()
 
-    # ---------- endpoints: resumen / estadísticas ----------
     def get_resumen(self):
         conn = db.get_conn()
         rubros = db.rows_to_dicts(conn.execute("SELECT * FROM rubros").fetchall())
@@ -294,7 +282,6 @@ class Handler(BaseHTTPRequestHandler):
             "detalle_materiales": detalle_materiales,
         })
 
-    # ---------- endpoints: cronograma ----------
     def get_cronograma(self):
         conn = db.get_conn()
         tareas = db.rows_to_dicts(conn.execute("SELECT * FROM tareas ORDER BY codigo").fetchall())
@@ -337,7 +324,23 @@ class Handler(BaseHTTPRequestHandler):
         conn.close()
         self.get_cronograma()
 
-    # ---------- endpoints: archivos fuente ----------
+    def get_computo(self):
+        conn = db.get_conn()
+        rows = db.rows_to_dicts(conn.execute(
+            "SELECT codigo, descripcion, unidad, costo_costo, categorias_json FROM computo_items ORDER BY codigo"
+        ).fetchall())
+        conn.close()
+        items = []
+        for r in rows:
+            items.append({
+                "codigo": r["codigo"],
+                "descripcion": r["descripcion"],
+                "unidad": r["unidad"],
+                "costo_costo": r["costo_costo"],
+                "categorias": json.loads(r["categorias_json"]) if r["categorias_json"] else [],
+            })
+        self._send_json({"items": items})
+
     NOMBRES_VALIDOS = {"Presupuesto.TXT", "Materiales.txt", "materiales por rubro.TXT"}
 
     def get_archivos(self):
@@ -411,6 +414,23 @@ class Handler(BaseHTTPRequestHandler):
                         f"en el archivo nuevo ({', '.join(sorted(huerfanos)[:10])}{'...' if len(huerfanos) > 10 else ''}). "
                         f"Esas compras se mantienen, pero no vas a poder verlas relacionadas con un material del catálogo actual."
                     )
+
+            elif nombre == "materiales por rubro.TXT":
+                items, avisos = parsers.parse_computo(contenido.encode("utf-8"))
+                if not items:
+                    conn.close()
+                    return self._send_error_json(
+                        "No se detectó ningún ítem en el archivo. Revisá que sea el formato correcto de materiales por rubro.TXT.")
+                conn.execute("DELETE FROM computo_items")
+                for it in items:
+                    conn.execute(
+                        "INSERT INTO computo_items (codigo, descripcion, unidad, costo_costo, categorias_json) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (it["codigo"], it["descripcion"], it["unidad"], it["costo_costo"],
+                         json.dumps(it["categorias"], ensure_ascii=False)),
+                    )
+                resultado["items_importados"] = len(items)
+                resultado["avisos"] = avisos
 
             conn.execute(
                 "INSERT OR REPLACE INTO archivos_fuente (nombre, contenido, actualizado_en) VALUES (?, ?, ?)",

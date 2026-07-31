@@ -1,7 +1,3 @@
-"""
-Capa de datos: SQLite puro (sin dependencias externas), para que corra igual
-en el sandbox de desarrollo y en el hosting (Railway) sin instalar nada.
-"""
 import sqlite3
 import os
 import json
@@ -60,6 +56,15 @@ CREATE TABLE IF NOT EXISTS archivos_fuente (
     nombre TEXT PRIMARY KEY,
     contenido TEXT,
     actualizado_en TEXT
+);
+
+CREATE TABLE IF NOT EXISTS computo_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo TEXT UNIQUE,
+    descripcion TEXT,
+    unidad TEXT,
+    costo_costo REAL DEFAULT 0,
+    categorias_json TEXT
 );
 """
 
@@ -135,6 +140,16 @@ def seed_if_empty():
                 "INSERT OR REPLACE INTO archivos_fuente (nombre, contenido, actualizado_en) VALUES (?, ?, ?)",
                 (nombre, contenido, ahora),
             )
+            if nombre == "materiales por rubro.TXT":
+                import parsers
+                items, _avisos = parsers.parse_computo(contenido.encode("utf-8"))
+                for it in items:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO computo_items (codigo, descripcion, unidad, costo_costo, categorias_json) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (it["codigo"], it["descripcion"], it["unidad"], it["costo_costo"],
+                         json.dumps(it["categorias"], ensure_ascii=False)),
+                    )
 
     conn.commit()
     conn.close()
