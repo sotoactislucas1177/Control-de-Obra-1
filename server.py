@@ -13,6 +13,9 @@ from urllib.parse import urlparse, parse_qs
 
 import db
 import cpm
+import parsers
+import datetime as _dt
+from urllib.parse import unquote
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
@@ -98,6 +101,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.get_resumen()
         if path == "/api/cronograma":
             return self.get_cronograma()
+        if path == "/api/archivos":
+            return self.get_archivos()
+        m = re.match(r"^/api/archivos/(.+)$", path)
+        if m:
+            return self.get_archivo(unquote(m.group(1)))
         if path.startswith("/api/"):
             return self._send_error_json("Ruta no encontrada", 404)
         return self._serve_static(path)
@@ -110,6 +118,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.post_compra()
         if path == "/api/cronograma":
             return self.post_tarea()
+        m = re.match(r"^/api/archivos/(.+)$", path)
+        if m:
+            return self.post_archivo(unquote(m.group(1)))
         return self._send_error_json("Ruta no encontrada", 404)
 
     def do_PUT(self):
@@ -117,6 +128,9 @@ class Handler(BaseHTTPRequestHandler):
         m = re.match(r"^/api/cronograma/(\d+)$", path)
         if m:
             return self.put_tarea(int(m.group(1)))
+        m = re.match(r"^/api/rubros/(\d+)$", path)
+        if m:
+            return self.put_rubro(int(m.group(1)))
         return self._send_error_json("Ruta no encontrada", 404)
 
     def do_DELETE(self):
@@ -162,6 +176,24 @@ class Handler(BaseHTTPRequestHandler):
         for r in rows:
             r["pct_incidencia"] = (r["monto_presupuestado"] / total) if total else 0
         self._send_json({"rubros": rows, "total_presupuestado": total})
+
+    def put_rubro(self, codigo):
+        data = self._read_json_body()
+        conn = db.get_conn()
+        existe = conn.execute("SELECT 1 FROM rubros WHERE codigo = ?", (codigo,)).fetchone()
+        if not existe:
+            conn.close()
+            return self._send_error_json("Ese rubro no existe", 404)
+        conn.execute(
+            "UPDATE rubros SET descripcion = ?, monto_presupuestado = ?, materiales = ?, mano_obra = ?, subcontratos = ? "
+            "WHERE codigo = ?",
+            (data.get("descripcion"), float(data.get("monto_presupuestado") or 0),
+             float(data.get("materiales") or 0), float(data.get("mano_obra") or 0),
+             float(data.get("subcontratos") or 0), codigo),
+        )
+        conn.commit()
+        conn.close()
+        self.get_rubros()
 
     # ---------- endpoints: materiales ----------
     def get_materiales(self):
@@ -304,6 +336,91 @@ class Handler(BaseHTTPRequestHandler):
         conn.commit()
         conn.close()
         self.get_cronograma()
+
+    # ---------- endpoints: archivos fuente ----------
+    NOMBRES_VALIDOS = {"Presupuesto.TXT", "Materiales.txt", "materiales por rubro.TXT"}
+
+    def get_archivos(self):
+        conn = db.get_conn()
+        rows = db.rows_to_dicts(conn.execute("SELECT nombre, actualizado_en, LENGTH(contenido) AS tamano FROM archivos_fuente").fetchall())
+        conn.close()
+        for r in rows:
+            r["lineas"] = None
+        self._send_json({"archivos": rows})
+
+    def get_archivo(self, nombre):
+        conn = db.get_conn()
+        row = conn.execute("SELECT * FROM archivos_fuente WHERE nombre = ?", (nombre,)).fetchone()
+        conn.close()
+        if not row:
+            return self._send_error_json("Archivo no encontrado", 404)
+        self._send_json(dict(row))
+
+    def post_archivo(self, nombre):
+        if nombre not in self.NOMBRES_VALIDOS:
+            return self._send_error_json(
+                f"Nombre de archivo no reconocido. Tiene que ser exactamente uno de: {', '.join(sorted(self.NOMBRES_VALIDOS))}")
+        data = self._read_json_body()
+        contenido = data.get("contenido")
+        if contenido is None:
+            return self._send_error_json("Falta el contenido del archivo")
+
+        resultado = {"nombre": nombre, "avisos": []}
+
+        conn = db.get_conn()
+        try:
+            if nombre == "Presupuesto.TXT":
+                rubros, avisos = parsers.parse_presupuesto(contenido.encode("utf-8"))
+                if not rubros:
+                    conn.close()
+                    return self._send_error_json(
+                        "No se detectó ningún rubro en el archivo. Revisá que sea el formato correcto de Presupuesto.TXT.")
+                conn.execute("DELETE FROM rubros")
+                for cod, desc, monto, mat, mo, subc in rubros:
+                    conn.execute(
+                        "INSERT INTO rubros (codigo, descripcion, monto_presupuestado, materiales, mano_obra, subcontratos) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (cod, desc, monto, mat, mo, subc),
+                    )
+                resultado["rubros_importados"] = len(rubros)
+                resultado["avisos"] = avisos
+
+            elif nombre == "Materiales.txt":
+                materiales, avisos = parsers.parse_materiales(contenido.encode("utf-8"))
+                if not materiales:
+                    conn.close()
+                    return self._send_error_json(
+                        "No se detectó ningún material en el archivo. Revisá que sea el formato correcto de Materiales.txt.")
+                codigos_existentes_compras = {
+                    r["material_codigo"] for r in conn.execute("SELECT DISTINCT material_codigo FROM compras").fetchall()
+                }
+                codigos_nuevos = {m[0] for m in materiales}
+                huerfanos = codigos_existentes_compras - codigos_nuevos
+                conn.execute("DELETE FROM materiales")
+                for cod, desc, unidad, punit, cant, parcial, cat in materiales:
+                    conn.execute(
+                        "INSERT INTO materiales (codigo, descripcion, unidad, categoria, precio_unitario, cantidad_proyectada, monto_proyectado) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        (cod, desc, unidad, cat, punit, cant, parcial),
+                    )
+                resultado["materiales_importados"] = len(materiales)
+                resultado["avisos"] = avisos
+                if huerfanos:
+                    resultado["avisos"].append(
+                        f"Ojo: hay {len(huerfanos)} compra(s) ya cargadas que referencian códigos que ya no existen "
+                        f"en el archivo nuevo ({', '.join(sorted(huerfanos)[:10])}{'...' if len(huerfanos) > 10 else ''}). "
+                        f"Esas compras se mantienen, pero no vas a poder verlas relacionadas con un material del catálogo actual."
+                    )
+
+            conn.execute(
+                "INSERT OR REPLACE INTO archivos_fuente (nombre, contenido, actualizado_en) VALUES (?, ?, ?)",
+                (nombre, contenido, _dt.datetime.utcnow().isoformat()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self._send_json(resultado)
 
 
 def main():

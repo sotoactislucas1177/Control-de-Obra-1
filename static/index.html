@@ -47,6 +47,12 @@
           <canvas id="chart-desvio"></canvas>
         </div>
       </div>
+
+      <div class="card">
+        <h3>Archivos fuente del proyecto</h3>
+        <p class="muted">Estos son los archivos originales del proyecto. Si subís uno nuevo con el mismo nombre, la app actualiza los rubros o materiales automáticamente.</p>
+        <div id="archivos-grid" class="archivos-grid"></div>
+      </div>
     </section>
 
     <section id="view-compras" class="view">
@@ -124,11 +130,30 @@
         <div class="table-wrap">
           <table id="tabla-rubros">
             <thead>
-              <tr><th>Código</th><th>Rubro</th><th>Presupuestado</th><th>Materiales</th><th>Mano de obra</th><th>Subcontratos</th><th>% incidencia</th></tr>
+              <tr><th>Código</th><th>Rubro</th><th>Presupuestado</th><th>Materiales</th><th>Mano de obra</th><th>Subcontratos</th><th>% incidencia</th><th></th></tr>
             </thead>
             <tbody></tbody>
           </table>
         </div>
+      </div>
+
+      <div class="card form-card" id="rubro-edit-card" style="display:none">
+        <h3 id="rubro-form-title">Editar rubro</h3>
+        <form id="form-rubro">
+          <input type="hidden" name="codigo">
+          <div class="form-row">
+            <label>Descripción <input type="text" name="descripcion" required></label>
+          </div>
+          <div class="form-row">
+            <label>Presupuestado ($) <input type="number" step="any" name="monto_presupuestado" required></label>
+            <label>Materiales ($) <input type="number" step="any" name="materiales"></label>
+            <label>Mano de obra ($) <input type="number" step="any" name="mano_obra"></label>
+            <label>Subcontratos ($) <input type="number" step="any" name="subcontratos"></label>
+          </div>
+          <button type="submit" class="btn-primary">Guardar rubro</button>
+          <button type="button" class="btn-secondary" id="btn-cancelar-rubro">Cancelar</button>
+          <span class="form-msg" id="form-rubro-msg"></span>
+        </form>
       </div>
     </section>
 

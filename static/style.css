@@ -212,3 +212,76 @@ tr:hover td { background: #FAFBFF; }
 /* ---------- Gantt ---------- */
 #gantt-target { overflow-x: auto; }
 .gantt .bar-critica .bar { fill: var(--red) !important; }
+
+/* ---------- Archivos fuente ---------- */
+.archivos-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.archivo-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: #FBFCFE;
+}
+
+.archivo-card .archivo-nombre {
+  font-weight: 700;
+  color: var(--navy);
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.archivo-card .archivo-meta {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.archivo-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.archivo-actions label.upload-btn {
+  background: var(--navy);
+  color: white;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.archivo-actions label.upload-btn:hover { background: var(--navy-light); }
+.archivo-actions input[type="file"] { display: none; }
+
+.archivo-ver {
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.archivo-preview {
+  margin-top: 10px;
+  max-height: 260px;
+  overflow: auto;
+  background: #10182B;
+  color: #D7E2F5;
+  font-family: "Consolas", monospace;
+  font-size: 11px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  white-space: pre;
+  display: none;
+}
+
+.archivo-avisos {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--amber);
+}

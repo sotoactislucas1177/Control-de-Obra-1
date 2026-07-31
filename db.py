@@ -5,6 +5,7 @@ en el sandbox de desarrollo y en el hosting (Railway) sin instalar nada.
 import sqlite3
 import os
 import json
+import datetime
 
 DB_PATH = os.environ.get("DB_PATH", os.path.join(os.path.dirname(__file__), "obra.db"))
 
@@ -53,6 +54,12 @@ CREATE TABLE IF NOT EXISTS tareas (
     duracion_semanas REAL DEFAULT 1,
     predecesora1 INTEGER,
     predecesora2 INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS archivos_fuente (
+    nombre TEXT PRIMARY KEY,
+    contenido TEXT,
+    actualizado_en TEXT
 );
 """
 
@@ -117,6 +124,17 @@ def seed_if_empty():
             "INSERT INTO tareas (codigo, nombre, duracion_semanas, predecesora1, predecesora2) VALUES (?, ?, ?, ?, ?)",
             (cod, tarea, dur, p1, p2),
         )
+
+    archivos_path = os.path.join(os.path.dirname(__file__), "seed_archivos.json")
+    if os.path.exists(archivos_path):
+        with open(archivos_path, encoding="utf-8") as f:
+            archivos = json.load(f)
+        ahora = datetime.datetime.utcnow().isoformat()
+        for nombre, contenido in archivos.items():
+            conn.execute(
+                "INSERT OR REPLACE INTO archivos_fuente (nombre, contenido, actualizado_en) VALUES (?, ?, ?)",
+                (nombre, contenido, ahora),
+            )
 
     conn.commit()
     conn.close()

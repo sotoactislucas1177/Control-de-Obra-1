@@ -86,6 +86,92 @@ async function loadDashboard() {
     $('#chart-desvio').closest('.card').querySelector('h3').textContent =
       'Materiales con mayor desvío (todavía no cargaste compras)';
   }
+
+  loadArchivos();
+}
+
+// ---------------- Archivos fuente ----------------
+function formatFecha(iso) {
+  if (!iso) return 'nunca';
+  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+  return d.toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' });
+}
+
+function formatTamano(bytes) {
+  if (bytes == null) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+async function loadArchivos() {
+  const { archivos } = await api('/api/archivos');
+  const grid = $('#archivos-grid');
+  grid.innerHTML = archivos.map((a) => `
+    <div class="archivo-card" data-nombre="${a.nombre}">
+      <div class="archivo-nombre">${a.nombre}</div>
+      <div class="archivo-meta">Actualizado: ${formatFecha(a.actualizado_en)} · ${formatTamano(a.tamano)}</div>
+      <div class="archivo-actions">
+        <span class="archivo-ver" data-nombre="${a.nombre}">Ver contenido</span>
+        <label class="upload-btn">
+          Reemplazar archivo
+          <input type="file" accept=".txt,.TXT" data-nombre="${a.nombre}">
+        </label>
+      </div>
+      <pre class="archivo-preview"></pre>
+      <div class="archivo-avisos"></div>
+    </div>`).join('');
+
+  $$('.archivo-ver').forEach((el) => {
+    el.addEventListener('click', async () => {
+      const card = el.closest('.archivo-card');
+      const pre = card.querySelector('.archivo-preview');
+      if (pre.style.display === 'block') {
+        pre.style.display = 'none';
+        el.textContent = 'Ver contenido';
+        return;
+      }
+      const data = await api(`/api/archivos/${encodeURIComponent(el.dataset.nombre)}`);
+      pre.textContent = data.contenido;
+      pre.style.display = 'block';
+      el.textContent = 'Ocultar contenido';
+    });
+  });
+
+  $$('.archivo-actions input[type="file"]').forEach((input) => {
+    input.addEventListener('change', () => handleArchivoUpload(input));
+  });
+}
+
+function handleArchivoUpload(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const nombre = input.dataset.nombre;
+  const card = input.closest('.archivo-card');
+  const avisos = card.querySelector('.archivo-avisos');
+  avisos.textContent = 'Procesando...';
+  avisos.style.color = 'var(--muted)';
+
+  const reader = new FileReader();
+  reader.onload = async () => {
+    try {
+      const resultado = await api(`/api/archivos/${encodeURIComponent(nombre)}`, {
+        method: 'POST',
+        body: JSON.stringify({ contenido: reader.result }),
+      });
+      let msg = 'Archivo actualizado.';
+      if (resultado.rubros_importados != null) msg += ` ${resultado.rubros_importados} rubros importados.`;
+      if (resultado.materiales_importados != null) msg += ` ${resultado.materiales_importados} materiales importados.`;
+      if (resultado.avisos && resultado.avisos.length) msg += ' ⚠ ' + resultado.avisos.join(' ⚠ ');
+      avisos.textContent = msg;
+      avisos.style.color = resultado.avisos && resultado.avisos.length ? 'var(--amber)' : 'var(--green)';
+      loadDashboard();
+    } catch (err) {
+      avisos.textContent = err.message;
+      avisos.style.color = 'var(--red)';
+    }
+  };
+  // los .txt de este proyecto suelen venir en windows-1252 (con tildes/ñ), no UTF-8
+  reader.readAsText(file, 'windows-1252');
 }
 
 // ---------------- Compras ----------------
@@ -164,8 +250,11 @@ function setupBuscadorMateriales() {
 }
 
 // ---------------- Rubros ----------------
+let rubrosCache = [];
+
 async function loadRubros() {
   const { rubros } = await api('/api/rubros');
+  rubrosCache = rubros;
   $('#tabla-rubros tbody').innerHTML = rubros.map((r) => `
     <tr>
       <td>${r.codigo}</td>
@@ -175,7 +264,49 @@ async function loadRubros() {
       <td>${money(r.mano_obra)}</td>
       <td>${money(r.subcontratos)}</td>
       <td>${pct(r.pct_incidencia)}</td>
+      <td><span class="link-action" data-codigo="${r.codigo}">Editar</span></td>
     </tr>`).join('');
+
+  $$('#tabla-rubros .link-action').forEach((el) => {
+    el.addEventListener('click', () => {
+      const r = rubrosCache.find((x) => String(x.codigo) === el.dataset.codigo);
+      if (r) fillFormRubro(r);
+    });
+  });
+}
+
+function fillFormRubro(r) {
+  const form = $('#form-rubro');
+  form.codigo.value = r.codigo;
+  form.descripcion.value = r.descripcion;
+  form.monto_presupuestado.value = r.monto_presupuestado;
+  form.materiales.value = r.materiales;
+  form.mano_obra.value = r.mano_obra;
+  form.subcontratos.value = r.subcontratos;
+  $('#rubro-form-title').textContent = `Editando rubro ${r.codigo}`;
+  $('#rubro-edit-card').style.display = 'block';
+}
+
+function setupFormRubro() {
+  $('#form-rubro').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = $('#form-rubro-msg');
+    const fd = new FormData(e.target);
+    const payload = Object.fromEntries(fd.entries());
+    const codigo = payload.codigo;
+    try {
+      await api(`/api/rubros/${codigo}`, { method: 'PUT', body: JSON.stringify(payload) });
+      msg.textContent = 'Rubro actualizado.';
+      msg.className = 'form-msg ok';
+      loadRubros();
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.className = 'form-msg error';
+    }
+  });
+  $('#btn-cancelar-rubro').addEventListener('click', () => {
+    $('#rubro-edit-card').style.display = 'none';
+  });
 }
 
 // ---------------- Cronograma / Gantt ----------------
@@ -305,6 +436,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupFormCompra();
   setupBuscadorMateriales();
   setupFormTarea();
+  setupFormRubro();
   setupFormProyecto();
   loadProyecto();
   loadDashboard();
