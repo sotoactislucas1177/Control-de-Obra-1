@@ -35,9 +35,167 @@ function onViewShown(view) {
   if (view === 'proyecto') loadProyecto();
 }
 
-// ---------------- Dashboard ----------------
-let chartCategoria, chartDesvio;
+// ---------------- Gráficos (canvas nativo, sin librerías externas) ----------------
+function niceNumber(val) {
+  if (val <= 0) return 1;
+  const exp = Math.floor(Math.log10(val));
+  const base = Math.pow(10, exp);
+  const frac = val / base;
+  let niceFrac;
+  if (frac <= 1) niceFrac = 1;
+  else if (frac <= 2) niceFrac = 2;
+  else if (frac <= 5) niceFrac = 5;
+  else niceFrac = 10;
+  return niceFrac * base;
+}
 
+function formatCompact(v) {
+  if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + 'M';
+  if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(0) + 'K';
+  return String(Math.round(v));
+}
+
+function setupCanvasSize(canvas, cssHeight) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssWidth = canvas.parentElement.clientWidth || 400;
+  canvas.width = cssWidth * dpr;
+  canvas.height = cssHeight * dpr;
+  canvas.style.width = cssWidth + 'px';
+  canvas.style.height = cssHeight + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssWidth, cssHeight);
+  return { ctx, cssWidth, cssHeight };
+}
+
+function drawBarChart(canvas, { labels, datasets }) {
+  if (!labels.length) {
+    const { ctx, cssWidth, cssHeight } = setupCanvasSize(canvas, 220);
+    ctx.fillStyle = '#9AA5B8';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Todavía no hay datos para graficar.', cssWidth / 2, cssHeight / 2);
+    return;
+  }
+  const { ctx, cssWidth, cssHeight } = setupCanvasSize(canvas, 260);
+  const padding = { top: 28, right: 12, bottom: 34, left: 56 };
+  const chartW = cssWidth - padding.left - padding.right;
+  const chartH = cssHeight - padding.top - padding.bottom;
+
+  const allValues = datasets.flatMap((d) => d.data);
+  const maxVal = Math.max(1, ...allValues);
+  const niceMax = niceNumber(maxVal);
+
+  ctx.strokeStyle = '#E4E8F1';
+  ctx.lineWidth = 1;
+  ctx.fillStyle = '#6B7280';
+  ctx.font = '10px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  const ySteps = 4;
+  for (let i = 0; i <= ySteps; i++) {
+    const v = (niceMax / ySteps) * i;
+    const y = padding.top + chartH - (v / niceMax) * chartH;
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(padding.left + chartW, y);
+    ctx.stroke();
+    ctx.fillText(formatCompact(v), padding.left - 8, y);
+  }
+
+  const groupCount = labels.length;
+  const groupWidth = chartW / groupCount;
+  const barsPerGroup = datasets.length;
+  const groupPadding = groupWidth * 0.18;
+  const barWidth = (groupWidth - groupPadding * 2) / barsPerGroup;
+
+  labels.forEach((label, gi) => {
+    const groupX = padding.left + gi * groupWidth + groupPadding;
+    datasets.forEach((ds, di) => {
+      const val = ds.data[gi] || 0;
+      const barH = (val / niceMax) * chartH;
+      const x = groupX + di * barWidth;
+      const y = padding.top + chartH - barH;
+      ctx.fillStyle = ds.backgroundColor;
+      ctx.fillRect(x, y, Math.max(1, barWidth - 3), barH);
+    });
+    ctx.fillStyle = '#333';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.font = '10px sans-serif';
+    const centerX = padding.left + gi * groupWidth + groupWidth / 2;
+    let text = label;
+    if (ctx.measureText(text).width > groupWidth) {
+      while (text.length > 3 && ctx.measureText(text + '…').width > groupWidth) {
+        text = text.slice(0, -1);
+      }
+      text += '…';
+    }
+    ctx.fillText(text, centerX, padding.top + chartH + 8);
+  });
+
+  if (datasets.length > 1) {
+    let lx = padding.left;
+    const ly = 8;
+    datasets.forEach((ds) => {
+      ctx.fillStyle = ds.backgroundColor;
+      ctx.fillRect(lx, ly, 10, 10);
+      ctx.fillStyle = '#333';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = '11px sans-serif';
+      ctx.fillText(ds.label, lx + 14, ly + 5);
+      lx += ctx.measureText(ds.label).width + 40;
+    });
+  }
+}
+
+function drawHorizontalBarChart(canvas, { labels, data, colors }) {
+  if (!labels.length) {
+    const { ctx, cssWidth, cssHeight } = setupCanvasSize(canvas, 220);
+    ctx.fillStyle = '#9AA5B8';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Todavía no cargaste compras.', cssWidth / 2, cssHeight / 2);
+    return;
+  }
+  const rowHeight = 28;
+  const cssHeight = Math.max(140, labels.length * rowHeight + 20);
+  const { ctx, cssWidth } = setupCanvasSize(canvas, cssHeight);
+
+  const labelWidth = Math.min(160, cssWidth * 0.38);
+  const chartW = cssWidth - labelWidth - 16;
+  const maxAbs = Math.max(1, ...data.map((v) => Math.abs(v)));
+  const zeroX = labelWidth + chartW / 2;
+  const scale = (chartW / 2) / maxAbs;
+
+  labels.forEach((label, i) => {
+    const y = 10 + i * rowHeight;
+    ctx.fillStyle = '#333';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    let text = label;
+    while (text.length > 3 && ctx.measureText(text).width > labelWidth - 10) {
+      text = text.slice(0, -1);
+    }
+    ctx.fillText(text, labelWidth - 8, y + (rowHeight - 10) / 2);
+
+    const val = data[i];
+    const barW = Math.abs(val) * scale;
+    const x = val >= 0 ? zeroX : zeroX - barW;
+    ctx.fillStyle = colors[i];
+    ctx.fillRect(x, y, barW, rowHeight - 10);
+  });
+
+  ctx.strokeStyle = '#B8C0D4';
+  ctx.beginPath();
+  ctx.moveTo(zeroX, 0);
+  ctx.lineTo(zeroX, cssHeight);
+  ctx.stroke();
+}
+
+// ---------------- Dashboard ----------------
 async function loadDashboard() {
   const resumen = await api('/api/resumen');
   const kpis = [
@@ -53,17 +211,12 @@ async function loadDashboard() {
     </div>`).join('');
 
   const cats = resumen.por_categoria;
-  if (chartCategoria) chartCategoria.destroy();
-  chartCategoria = new Chart($('#chart-categoria'), {
-    type: 'bar',
-    data: {
-      labels: cats.map((c) => c.categoria),
-      datasets: [
-        { label: 'Proyectado', data: cats.map((c) => c.proyectado), backgroundColor: '#2E5597' },
-        { label: 'Gastado', data: cats.map((c) => c.gastado), backgroundColor: '#4C8DFF' },
-      ],
-    },
-    options: { responsive: true, plugins: { legend: { position: 'bottom' } } },
+  drawBarChart($('#chart-categoria'), {
+    labels: cats.map((c) => c.categoria),
+    datasets: [
+      { label: 'Proyectado', data: cats.map((c) => c.proyectado), backgroundColor: '#2E5597' },
+      { label: 'Gastado', data: cats.map((c) => c.gastado), backgroundColor: '#4C8DFF' },
+    ],
   });
 
   const top = [...resumen.detalle_materiales]
@@ -71,21 +224,16 @@ async function loadDashboard() {
     .slice(0, 8)
     .filter((m) => m.monto_gastado > 0);
 
-  if (chartDesvio) chartDesvio.destroy();
-  chartDesvio = new Chart($('#chart-desvio'), {
-    type: 'bar',
-    data: {
-      labels: top.map((m) => m.descripcion.slice(0, 22)),
-      datasets: [{ label: 'Desvío ($)', data: top.map((m) => m.diferencia_monto),
-        backgroundColor: top.map((m) => (m.diferencia_monto > 0 ? '#D64545' : '#1F9D6B')) }],
-    },
-    options: { indexAxis: 'y', responsive: true, plugins: { legend: { display: false } } },
-  });
+  const tituloDesvio = $('#chart-desvio').closest('.card').querySelector('h3');
+  tituloDesvio.textContent = top.length === 0
+    ? 'Materiales con mayor desvío (todavía no cargaste compras)'
+    : 'Materiales con mayor desvío';
 
-  if (top.length === 0) {
-    $('#chart-desvio').closest('.card').querySelector('h3').textContent =
-      'Materiales con mayor desvío (todavía no cargaste compras)';
-  }
+  drawHorizontalBarChart($('#chart-desvio'), {
+    labels: top.map((m) => m.descripcion.slice(0, 22)),
+    data: top.map((m) => m.diferencia_monto),
+    colors: top.map((m) => (m.diferencia_monto > 0 ? '#D64545' : '#1F9D6B')),
+  });
 
   loadArchivos();
 }
@@ -309,9 +457,58 @@ function setupFormRubro() {
   });
 }
 
-// ---------------- Cronograma / Gantt ----------------
-let ganttInstance = null;
+// ---------------- Cronograma (HTML/CSS propio, sin librerías externas) ----------------
 let tareasCache = [];
+
+function renderGanttSimple(target, tareas) {
+  target.innerHTML = '';
+  if (!tareas.length) {
+    target.innerHTML = '<p class="muted">Todavía no cargaste tareas.</p>';
+    return;
+  }
+
+  const starts = tareas.map((t) => new Date(t.fecha_inicio));
+  const ends = tareas.map((t) => new Date(t.fecha_fin));
+  const minDate = new Date(Math.min(...starts));
+  const maxDate = new Date(Math.max(...ends));
+  const totalDays = Math.max(1, (maxDate - minDate) / 86400000);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'gantt-simple';
+
+  const header = document.createElement('div');
+  header.className = 'gantt-header-row';
+  header.innerHTML = `
+    <div class="gantt-label"></div>
+    <div class="gantt-track">
+      <span class="gantt-fecha-inicio">${minDate.toLocaleDateString('es-AR')}</span>
+      <span class="gantt-fecha-fin">${maxDate.toLocaleDateString('es-AR')}</span>
+    </div>`;
+  wrap.appendChild(header);
+
+  tareas.forEach((t) => {
+    const start = new Date(t.fecha_inicio);
+    const end = new Date(t.fecha_fin);
+    const offsetPct = ((start - minDate) / 86400000 / totalDays) * 100;
+    const widthPct = Math.max(1.5, ((end - start) / 86400000 / totalDays) * 100);
+
+    const row = document.createElement('div');
+    row.className = 'gantt-row';
+    row.innerHTML = `
+      <div class="gantt-label" title="${t.nombre}">${t.codigo} — ${t.nombre}</div>
+      <div class="gantt-track">
+        <div class="gantt-bar ${t.critica ? 'critica' : 'normal'}" style="left:${offsetPct}%; width:${widthPct}%"
+             title="${t.nombre}: ${t.fecha_inicio} → ${t.fecha_fin}${t.critica ? ' (crítica)' : ''}"></div>
+      </div>`;
+    row.querySelector('.gantt-bar').addEventListener('click', () => {
+      const found = tareasCache.find((x) => x.id === t.id);
+      if (found) fillFormTarea(found);
+    });
+    wrap.appendChild(row);
+  });
+
+  target.appendChild(wrap);
+}
 
 async function loadCronograma() {
   let data;
@@ -322,26 +519,7 @@ async function loadCronograma() {
     return;
   }
   tareasCache = data.tareas;
-
-  const tasks = data.tareas.map((t) => ({
-    id: String(t.id),
-    name: `${t.codigo} — ${t.nombre}`,
-    start: t.fecha_inicio,
-    end: t.fecha_fin,
-    progress: 0,
-    custom_class: t.critica ? 'bar-critica' : 'bar-normal',
-  }));
-
-  $('#gantt-target').innerHTML = '';
-  if (tasks.length > 0) {
-    ganttInstance = new Gantt('#gantt-target', tasks, {
-      view_mode: 'Week',
-      on_click: (task) => {
-        const t = tareasCache.find((x) => String(x.id) === task.id);
-        if (t) fillFormTarea(t);
-      },
-    });
-  }
+  renderGanttSimple($('#gantt-target'), data.tareas);
 }
 
 function fillFormTarea(t) {
@@ -440,4 +618,9 @@ document.addEventListener('DOMContentLoaded', () => {
   setupFormProyecto();
   loadProyecto();
   loadDashboard();
+});
+
+window.addEventListener('resize', () => {
+  const dashboardActive = $('#view-dashboard').classList.contains('active');
+  if (dashboardActive) loadDashboard();
 });
