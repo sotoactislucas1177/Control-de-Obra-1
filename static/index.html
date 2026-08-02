@@ -21,6 +21,7 @@
       <li data-view="compras" class="nav-item">Cargar compra</li>
       <li data-view="materiales" class="nav-item">Materiales</li>
       <li data-view="rubros" class="nav-item">Rubros</li>
+      <li data-view="computo" class="nav-item">Cómputo por ítem</li>
       <li data-view="cronograma" class="nav-item">Cronograma</li>
       <li data-view="proyecto" class="nav-item">Datos del proyecto</li>
     </ul>
@@ -151,6 +152,17 @@
           <button type="button" class="btn-secondary" id="btn-cancelar-rubro">Cancelar</button>
           <span class="form-msg" id="form-rubro-msg"></span>
         </form>
+      </div>
+    </section>
+
+    <section id="view-computo" class="view">
+      <header class="view-header">
+        <h1>Cómputo por ítem</h1>
+        <p class="muted">Desglose de materiales, mano de obra y subcontratos que componen cada ítem de obra. Hacé clic en un ítem para ver el detalle.</p>
+      </header>
+      <div class="card">
+        <input type="search" id="buscador-computo" placeholder="Buscar ítem por código o descripción..." class="search-input">
+        <div id="computo-lista"></div>
       </div>
     </section>
 
