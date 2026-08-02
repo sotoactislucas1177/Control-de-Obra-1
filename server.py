@@ -92,6 +92,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.get_compras()
         if path == "/api/resumen":
             return self.get_resumen()
+        if path == "/api/cronograma/real":
+            return self.get_cronograma_real()
+        if path == "/api/cronograma/revisado":
+            return self.get_cronograma_revisado()
         if path == "/api/cronograma":
             return self.get_cronograma()
         if path == "/api/archivos":
@@ -120,6 +124,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         path = urlparse(self.path).path
+        m = re.match(r"^/api/cronograma/(\d+)/real$", path)
+        if m:
+            return self.put_tarea_real(int(m.group(1)))
+        m = re.match(r"^/api/cronograma/(\d+)/revisado$", path)
+        if m:
+            return self.put_tarea_revisada(int(m.group(1)))
         m = re.match(r"^/api/cronograma/(\d+)$", path)
         if m:
             return self.put_tarea(int(m.group(1)))
@@ -324,22 +334,68 @@ class Handler(BaseHTTPRequestHandler):
         conn.close()
         self.get_cronograma()
 
-    def get_computo(self):
+    def get_cronograma_real(self):
         conn = db.get_conn()
-        rows = db.rows_to_dicts(conn.execute(
-            "SELECT codigo, descripcion, unidad, costo_costo, categorias_json FROM computo_items ORDER BY codigo"
+        tareas = db.rows_to_dicts(conn.execute(
+            "SELECT id, codigo, nombre, duracion_semanas, predecesora1, predecesora2, "
+            "fecha_inicio_real, fecha_fin_real FROM tareas ORDER BY codigo"
         ).fetchall())
+        proyecto = conn.execute("SELECT fecha_inicio FROM proyecto WHERE id = 1").fetchone()
         conn.close()
-        items = []
-        for r in rows:
-            items.append({
-                "codigo": r["codigo"],
-                "descripcion": r["descripcion"],
-                "unidad": r["unidad"],
-                "costo_costo": r["costo_costo"],
-                "categorias": json.loads(r["categorias_json"]) if r["categorias_json"] else [],
-            })
-        self._send_json({"items": items})
+        self._send_json({
+            "tareas": tareas,
+            "fecha_inicio_proyecto": proyecto["fecha_inicio"] if proyecto else None,
+        })
+
+    def put_tarea_real(self, tarea_id):
+        data = self._read_json_body()
+        campos = ["fecha_inicio_real", "fecha_fin_real"]
+        campos_presentes = [c for c in campos if c in data]
+        if not campos_presentes:
+            return self._send_error_json("Falta fecha_inicio_real y/o fecha_fin_real")
+        conn = db.get_conn()
+        existe = conn.execute("SELECT 1 FROM tareas WHERE id = ?", (tarea_id,)).fetchone()
+        if not existe:
+            conn.close()
+            return self._send_error_json("Esa tarea no existe", 404)
+        sets = ", ".join(f"{c} = ?" for c in campos_presentes)
+        valores = [data.get(c) or None for c in campos_presentes]
+        conn.execute(f"UPDATE tareas SET {sets} WHERE id = ?", valores + [tarea_id])
+        conn.commit()
+        conn.close()
+        self.get_cronograma_real()
+
+    def get_cronograma_revisado(self):
+        conn = db.get_conn()
+        tareas = db.rows_to_dicts(conn.execute("SELECT * FROM tareas ORDER BY codigo").fetchall())
+        proyecto = conn.execute("SELECT fecha_inicio FROM proyecto WHERE id = 1").fetchone()
+        conn.close()
+        fecha_inicio = datetime.date.fromisoformat(proyecto["fecha_inicio"]) if proyecto and proyecto["fecha_inicio"] else datetime.date.today()
+        resultado, error = cpm.compute_cpm_revisado(tareas, fecha_inicio)
+        if error:
+            return self._send_error_json(error, 422)
+        original, error_orig = cpm.compute_cpm(tareas, fecha_inicio)
+        if not error_orig:
+            resultado["fecha_fin_proyecto_original"] = (
+                fecha_inicio + datetime.timedelta(weeks=original["duracion_total_semanas"]) - datetime.timedelta(days=1)
+            ).isoformat()
+        self._send_json(resultado)
+
+    def put_tarea_revisada(self, tarea_id):
+        data = self._read_json_body()
+        if "duracion_revisada_semanas" not in data:
+            return self._send_error_json("Falta duracion_revisada_semanas")
+        valor = data.get("duracion_revisada_semanas")
+        valor = float(valor) if valor not in (None, "") else None
+        conn = db.get_conn()
+        existe = conn.execute("SELECT 1 FROM tareas WHERE id = ?", (tarea_id,)).fetchone()
+        if not existe:
+            conn.close()
+            return self._send_error_json("Esa tarea no existe", 404)
+        conn.execute("UPDATE tareas SET duracion_revisada_semanas = ? WHERE id = ?", (valor, tarea_id))
+        conn.commit()
+        conn.close()
+        self.get_cronograma_revisado()
 
     NOMBRES_VALIDOS = {"Presupuesto.TXT", "Materiales.txt", "materiales por rubro.TXT"}
 
@@ -441,6 +497,23 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
 
         self._send_json(resultado)
+
+    def get_computo(self):
+        conn = db.get_conn()
+        rows = db.rows_to_dicts(conn.execute(
+            "SELECT codigo, descripcion, unidad, costo_costo, categorias_json FROM computo_items ORDER BY codigo"
+        ).fetchall())
+        conn.close()
+        items = []
+        for r in rows:
+            items.append({
+                "codigo": r["codigo"],
+                "descripcion": r["descripcion"],
+                "unidad": r["unidad"],
+                "costo_costo": r["costo_costo"],
+                "categorias": json.loads(r["categorias_json"]) if r["categorias_json"] else [],
+            })
+        self._send_json({"items": items})
 
 
 def main():
