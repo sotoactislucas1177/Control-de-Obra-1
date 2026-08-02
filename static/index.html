@@ -168,12 +168,34 @@
 
     <section id="view-cronograma" class="view">
       <header class="view-header">
-        <h1>Cronograma — camino crítico</h1>
-        <p class="muted">Las barras rojas son tareas críticas (sin margen). Hacé clic en una barra para editarla.</p>
+        <h1>Cronograma</h1>
+        <p class="muted">Tres vistas: lo planificado, lo que pasó realmente, y una proyección revisada con el nuevo camino crítico.</p>
       </header>
+
       <div class="card">
-        <div id="gantt-target"></div>
+        <div class="subtabs">
+          <span class="subtab active" data-subview="proyectado">Proyectado</span>
+          <span class="subtab" data-subview="real">Real</span>
+          <span class="subtab" data-subview="revisado">Revisado</span>
+        </div>
+
+        <div id="sub-proyectado" class="subview active">
+          <p class="muted">Las barras rojas son tareas críticas (sin margen). Arrastrá el borde derecho de una barra para cambiar su duración; hacé clic en el centro para editarla abajo.</p>
+          <div id="gantt-target"></div>
+        </div>
+
+        <div id="sub-real" class="subview">
+          <p class="muted">Cargá cuándo empezó y terminó realmente cada tarea. Hacé clic en el espacio vacío de una tarea para crear su barra; después arrastrala para moverla o estirá los bordes para ajustar las fechas.</p>
+          <div id="gantt-real-target"></div>
+        </div>
+
+        <div id="sub-revisado" class="subview">
+          <p class="muted">Mezcla lo real (fijo) con lo que falta: duración planificada o, si la cargaste, una nueva estimación. Las tareas rayadas ya se completaron; las rojas son las que hoy definen la fecha de fin del proyecto. Arrastrá el borde derecho de una tarea pendiente para cargarle una nueva duración estimada.</p>
+          <div id="revisado-resumen" class="revisado-resumen"></div>
+          <div id="gantt-revisado-target"></div>
+        </div>
       </div>
+
       <div class="card form-card">
         <h3 id="tarea-form-title">Agregar tarea</h3>
         <form id="form-tarea">

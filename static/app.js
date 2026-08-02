@@ -537,6 +537,11 @@ function setupFormRubro() {
 // ---------------- Cronograma (HTML/CSS propio, sin librerías externas) ----------------
 let tareasCache = [];
 
+function sumarDiasISO(fechaISO, dias) {
+  const d = new Date(fechaISO);
+  return new Date(d.getTime() + dias * 86400000).toISOString().slice(0, 10);
+}
+
 function renderGanttSimple(target, tareas) {
   target.innerHTML = '';
   if (!tareas.length) {
@@ -573,14 +578,64 @@ function renderGanttSimple(target, tareas) {
     row.className = 'gantt-row';
     row.innerHTML = `
       <div class="gantt-label" title="${t.nombre}">${t.codigo} — ${t.nombre}</div>
-      <div class="gantt-track">
-        <div class="gantt-bar ${t.critica ? 'critica' : 'normal'}" style="left:${offsetPct}%; width:${widthPct}%"
-             title="${t.nombre}: ${t.fecha_inicio} → ${t.fecha_fin}${t.critica ? ' (crítica)' : ''}"></div>
-      </div>`;
-    row.querySelector('.gantt-bar').addEventListener('click', () => {
+      <div class="gantt-track"></div>`;
+    const track = row.querySelector('.gantt-track');
+
+    const bar = document.createElement('div');
+    bar.className = `gantt-bar arrastrable ${t.critica ? 'critica' : 'normal'}`;
+    bar.style.left = offsetPct + '%';
+    bar.style.width = widthPct + '%';
+    bar.title = `${t.nombre}: ${t.fecha_inicio} → ${t.fecha_fin}${t.critica ? ' (crítica)' : ''}`;
+    track.appendChild(bar);
+
+    const handleR = document.createElement('div');
+    handleR.className = 'gantt-resize-handle right';
+    bar.appendChild(handleR);
+
+    const pxPerDay = () => track.getBoundingClientRect().width / totalDays;
+
+    handleR.addEventListener('pointerdown', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      const startX = e.clientX;
+      const ppd = pxPerDay();
+      handleR.setPointerCapture(e.pointerId);
+      const onMove = (ev) => {
+        const deltaDays = Math.round((ev.clientX - startX) / ppd);
+        const nuevoWidthPct = Math.max(1.5, widthPct + (deltaDays / totalDays) * 100);
+        bar.style.width = nuevoWidthPct + '%';
+      };
+      const onUp = async (ev) => {
+        handleR.removeEventListener('pointermove', onMove);
+        handleR.removeEventListener('pointerup', onUp);
+        const deltaDays = Math.round((ev.clientX - startX) / ppd);
+        if (deltaDays === 0) return;
+        const nuevaDuracion = Math.max(0.5, Math.round(((t.duracion_semanas * 7 + deltaDays) / 3.5)) * 0.5);
+        try {
+          await api(`/api/cronograma/${t.id}`, {
+            method: 'PUT',
+            body: JSON.stringify({
+              nombre: t.nombre,
+              duracion_semanas: nuevaDuracion,
+              predecesora1: t.predecesora1,
+              predecesora2: t.predecesora2,
+            }),
+          });
+        } catch (err) {
+          alert(err.message);
+        }
+        loadCronograma();
+      };
+      handleR.addEventListener('pointermove', onMove);
+      handleR.addEventListener('pointerup', onUp);
+    });
+
+    bar.addEventListener('click', (e) => {
+      if (e.target !== bar) return;
       const found = tareasCache.find((x) => x.id === t.id);
       if (found) fillFormTarea(found);
     });
+
     wrap.appendChild(row);
   });
 
@@ -597,6 +652,355 @@ async function loadCronograma() {
   }
   tareasCache = data.tareas;
   renderGanttSimple($('#gantt-target'), data.tareas);
+}
+
+// ---------------- Cronograma real ----------------
+let tareasRealCache = [];
+
+async function loadCronogramaReal() {
+  let data;
+  try {
+    data = await api('/api/cronograma/real');
+  } catch (err) {
+    $('#gantt-real-target').innerHTML = `<p class="form-msg error">${err.message}</p>`;
+    return;
+  }
+  tareasRealCache = data.tareas;
+
+  const fechasReales = tareasRealCache.flatMap((t) => [t.fecha_inicio_real, t.fecha_fin_real]).filter(Boolean);
+  let minDate, maxDate;
+  if (fechasReales.length) {
+    minDate = new Date(Math.min(...fechasReales.map((f) => new Date(f))) - 7 * 86400000);
+    maxDate = new Date(Math.max(...fechasReales.map((f) => new Date(f))) + 14 * 86400000);
+  } else if (tareasCache.length) {
+    minDate = new Date(Math.min(...tareasCache.map((t) => new Date(t.fecha_inicio))));
+    maxDate = new Date(Math.max(...tareasCache.map((t) => new Date(t.fecha_fin))));
+  } else {
+    minDate = new Date(data.fecha_inicio_proyecto || new Date());
+    maxDate = new Date(minDate.getTime() + 180 * 86400000);
+  }
+  renderGanttReal($('#gantt-real-target'), tareasRealCache, minDate, maxDate);
+}
+
+function renderGanttReal(target, tareas, minDate, maxDate) {
+  target.innerHTML = '';
+  if (!tareas.length) {
+    target.innerHTML = '<p class="muted">Todavía no cargaste tareas (hacelo desde la vista Proyectado).</p>';
+    return;
+  }
+  const totalDays = Math.max(1, (maxDate - minDate) / 86400000);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'gantt-simple';
+
+  const header = document.createElement('div');
+  header.className = 'gantt-header-row';
+  header.innerHTML = `
+    <div class="gantt-label"></div>
+    <div class="gantt-track">
+      <span class="gantt-fecha-inicio">${minDate.toLocaleDateString('es-AR')}</span>
+      <span class="gantt-fecha-fin">${maxDate.toLocaleDateString('es-AR')}</span>
+    </div>`;
+  wrap.appendChild(header);
+
+  tareas.forEach((t) => {
+    const row = document.createElement('div');
+    row.className = 'gantt-row';
+    row.innerHTML = `<div class="gantt-label" title="${t.nombre}">${t.codigo} — ${t.nombre}</div><div class="gantt-track"></div>`;
+    const track = row.querySelector('.gantt-track');
+
+    if (t.fecha_inicio_real && t.fecha_fin_real) {
+      dibujarBarraReal(track, t, minDate, totalDays);
+    } else {
+      track.classList.add('vacio');
+      track.innerHTML = '<span class="gantt-track-hint">Sin iniciar — hacé clic para marcar el inicio</span>';
+      track.addEventListener('click', async (e) => {
+        const rect = track.getBoundingClientRect();
+        const pxPerDay = rect.width / totalDays;
+        const diasOffset = Math.round((e.clientX - rect.left) / pxPerDay);
+        const inicio = sumarDiasISO(minDate.toISOString().slice(0, 10), diasOffset);
+        const fin = sumarDiasISO(inicio, 6);
+        try {
+          await api(`/api/cronograma/${t.id}/real`, {
+            method: 'PUT',
+            body: JSON.stringify({ fecha_inicio_real: inicio, fecha_fin_real: fin }),
+          });
+          loadCronogramaReal();
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+    }
+    wrap.appendChild(row);
+  });
+
+  target.appendChild(wrap);
+}
+
+function dibujarBarraReal(track, t, minDate, totalDays) {
+  const start = new Date(t.fecha_inicio_real);
+  const end = new Date(t.fecha_fin_real);
+  const offsetPct = ((start - minDate) / 86400000 / totalDays) * 100;
+  const widthPct = Math.max(1.5, ((end - start) / 86400000 / totalDays) * 100);
+
+  const bar = document.createElement('div');
+  bar.className = 'gantt-bar normal arrastrable';
+  bar.style.left = offsetPct + '%';
+  bar.style.width = widthPct + '%';
+  bar.title = `${t.nombre}: ${t.fecha_inicio_real} → ${t.fecha_fin_real}`;
+
+  const handleL = document.createElement('div');
+  handleL.className = 'gantt-resize-handle left';
+  const handleR = document.createElement('div');
+  handleR.className = 'gantt-resize-handle right';
+  bar.appendChild(handleL);
+  bar.appendChild(handleR);
+  track.appendChild(bar);
+
+  const pxPerDay = () => track.getBoundingClientRect().width / totalDays;
+
+  bar.addEventListener('pointerdown', (e) => {
+    if (e.target !== bar) return;
+    e.preventDefault();
+    const startX = e.clientX;
+    const ppd = pxPerDay();
+    bar.setPointerCapture(e.pointerId);
+    const onMove = (ev) => {
+      const deltaDays = Math.round((ev.clientX - startX) / ppd);
+      bar.style.left = (offsetPct + (deltaDays / totalDays) * 100) + '%';
+    };
+    const onUp = async (ev) => {
+      bar.removeEventListener('pointermove', onMove);
+      bar.removeEventListener('pointerup', onUp);
+      const deltaDays = Math.round((ev.clientX - startX) / ppd);
+      if (deltaDays === 0) return;
+      const nuevoInicio = sumarDiasISO(t.fecha_inicio_real, deltaDays);
+      const nuevoFin = sumarDiasISO(t.fecha_fin_real, deltaDays);
+      try {
+        await api(`/api/cronograma/${t.id}/real`, {
+          method: 'PUT',
+          body: JSON.stringify({ fecha_inicio_real: nuevoInicio, fecha_fin_real: nuevoFin }),
+        });
+      } catch (err) {
+        alert(err.message);
+      }
+      loadCronogramaReal();
+    };
+    bar.addEventListener('pointermove', onMove);
+    bar.addEventListener('pointerup', onUp);
+  });
+
+  handleR.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX;
+    const ppd = pxPerDay();
+    handleR.setPointerCapture(e.pointerId);
+    const onMove = (ev) => {
+      const deltaDays = Math.round((ev.clientX - startX) / ppd);
+      const nuevoWidthPct = Math.max(1.5, widthPct + (deltaDays / totalDays) * 100);
+      bar.style.width = nuevoWidthPct + '%';
+    };
+    const onUp = async (ev) => {
+      handleR.removeEventListener('pointermove', onMove);
+      handleR.removeEventListener('pointerup', onUp);
+      const deltaDays = Math.round((ev.clientX - startX) / ppd);
+      if (deltaDays === 0) return;
+      let nuevoFin = sumarDiasISO(t.fecha_fin_real, deltaDays);
+      if (nuevoFin <= t.fecha_inicio_real) nuevoFin = sumarDiasISO(t.fecha_inicio_real, 1);
+      try {
+        await api(`/api/cronograma/${t.id}/real`, {
+          method: 'PUT',
+          body: JSON.stringify({ fecha_fin_real: nuevoFin }),
+        });
+      } catch (err) {
+        alert(err.message);
+      }
+      loadCronogramaReal();
+    };
+    handleR.addEventListener('pointermove', onMove);
+    handleR.addEventListener('pointerup', onUp);
+  });
+
+  handleL.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX;
+    const ppd = pxPerDay();
+    handleL.setPointerCapture(e.pointerId);
+    const onMove = (ev) => {
+      const deltaDays = Math.round((ev.clientX - startX) / ppd);
+      bar.style.left = (offsetPct + (deltaDays / totalDays) * 100) + '%';
+      bar.style.width = Math.max(1.5, widthPct - (deltaDays / totalDays) * 100) + '%';
+    };
+    const onUp = async (ev) => {
+      handleL.removeEventListener('pointermove', onMove);
+      handleL.removeEventListener('pointerup', onUp);
+      const deltaDays = Math.round((ev.clientX - startX) / ppd);
+      if (deltaDays === 0) return;
+      let nuevoInicio = sumarDiasISO(t.fecha_inicio_real, deltaDays);
+      if (nuevoInicio >= t.fecha_fin_real) nuevoInicio = sumarDiasISO(t.fecha_fin_real, -1);
+      try {
+        await api(`/api/cronograma/${t.id}/real`, {
+          method: 'PUT',
+          body: JSON.stringify({ fecha_inicio_real: nuevoInicio }),
+        });
+      } catch (err) {
+        alert(err.message);
+      }
+      loadCronogramaReal();
+    };
+    handleL.addEventListener('pointermove', onMove);
+    handleL.addEventListener('pointerup', onUp);
+  });
+}
+
+// ---------------- Cronograma revisado (camino crítico recalculado) ----------------
+let tareasRevisadoCache = [];
+
+async function loadCronogramaRevisado() {
+  let data;
+  try {
+    data = await api('/api/cronograma/revisado');
+  } catch (err) {
+    $('#gantt-revisado-target').innerHTML = `<p class="form-msg error">${err.message}</p>`;
+    $('#revisado-resumen').innerHTML = '';
+    return;
+  }
+  tareasRevisadoCache = data.tareas;
+  renderResumenRevisado(data);
+  renderGanttRevisado($('#gantt-revisado-target'), data.tareas);
+}
+
+function renderResumenRevisado(data) {
+  const cont = $('#revisado-resumen');
+  if (!data.fecha_fin_proyecto_original) {
+    cont.innerHTML = '';
+    return;
+  }
+  const original = new Date(data.fecha_fin_proyecto_original);
+  const revisada = new Date(data.fecha_fin_proyecto_revisada);
+  const diffDias = Math.round((revisada - original) / 86400000);
+  let etiqueta = 'Sin cambios';
+  let clase = '';
+  if (diffDias > 0) { etiqueta = `+${diffDias} días de atraso`; clase = 'atraso'; }
+  else if (diffDias < 0) { etiqueta = `${Math.abs(diffDias)} días de adelanto`; clase = 'adelanto'; }
+
+  cont.innerHTML = `
+    <div>
+      <div class="resumen-label">Fin proyectado originalmente</div>
+      <div class="resumen-valor">${original.toLocaleDateString('es-AR')}</div>
+    </div>
+    <div>
+      <div class="resumen-label">Fin revisado hoy</div>
+      <div class="resumen-valor">${revisada.toLocaleDateString('es-AR')}</div>
+    </div>
+    <div>
+      <div class="resumen-label">Diferencia</div>
+      <div class="resumen-valor ${clase}">${etiqueta}</div>
+    </div>`;
+}
+
+function renderGanttRevisado(target, tareas) {
+  target.innerHTML = '';
+  if (!tareas.length) {
+    target.innerHTML = '<p class="muted">Todavía no cargaste tareas.</p>';
+    return;
+  }
+  const starts = tareas.map((t) => new Date(t.fecha_inicio_revisada));
+  const ends = tareas.map((t) => new Date(t.fecha_fin_revisada));
+  const minDate = new Date(Math.min(...starts));
+  const maxDate = new Date(Math.max(...ends));
+  const totalDays = Math.max(1, (maxDate - minDate) / 86400000);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'gantt-simple';
+
+  const header = document.createElement('div');
+  header.className = 'gantt-header-row';
+  header.innerHTML = `
+    <div class="gantt-label"></div>
+    <div class="gantt-track">
+      <span class="gantt-fecha-inicio">${minDate.toLocaleDateString('es-AR')}</span>
+      <span class="gantt-fecha-fin">${maxDate.toLocaleDateString('es-AR')}</span>
+    </div>`;
+  wrap.appendChild(header);
+
+  tareas.forEach((t) => {
+    const start = new Date(t.fecha_inicio_revisada);
+    const end = new Date(t.fecha_fin_revisada);
+    const offsetPct = ((start - minDate) / 86400000 / totalDays) * 100;
+    const widthPct = Math.max(1.5, ((end - start) / 86400000 / totalDays) * 100);
+
+    const row = document.createElement('div');
+    row.className = 'gantt-row';
+    row.innerHTML = `<div class="gantt-label" title="${t.nombre}">${t.codigo} — ${t.nombre}</div><div class="gantt-track"></div>`;
+    const track = row.querySelector('.gantt-track');
+
+    const bar = document.createElement('div');
+    bar.className = `gantt-bar ${t.critica ? 'critica' : 'normal'} ${t.completada ? 'completada' : ''}`;
+    bar.style.left = offsetPct + '%';
+    bar.style.width = widthPct + '%';
+    bar.title = `${t.nombre}: ${t.fecha_inicio_revisada} → ${t.fecha_fin_revisada}${t.critica ? ' (crítica)' : ''}${t.completada ? ' (completada)' : ''}`;
+    track.appendChild(bar);
+
+    if (!t.completada) {
+      const handleR = document.createElement('div');
+      handleR.className = 'gantt-resize-handle right';
+      bar.appendChild(handleR);
+
+      const pxPerDay = () => track.getBoundingClientRect().width / totalDays;
+      handleR.addEventListener('pointerdown', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const startX = e.clientX;
+        const ppd = pxPerDay();
+        handleR.setPointerCapture(e.pointerId);
+        const onMove = (ev) => {
+          const deltaDays = Math.round((ev.clientX - startX) / ppd);
+          const nuevoWidthPct = Math.max(1.5, widthPct + (deltaDays / totalDays) * 100);
+          bar.style.width = nuevoWidthPct + '%';
+        };
+        const onUp = async (ev) => {
+          handleR.removeEventListener('pointermove', onMove);
+          handleR.removeEventListener('pointerup', onUp);
+          const deltaDays = Math.round((ev.clientX - startX) / ppd);
+          if (deltaDays === 0) return;
+          const duracionActual = t.duracion_revisada_semanas || t.duracion_semanas;
+          const nuevaDuracion = Math.max(0.5, Math.round(((duracionActual * 7 + deltaDays) / 3.5)) * 0.5);
+          try {
+            await api(`/api/cronograma/${t.id}/revisado`, {
+              method: 'PUT',
+              body: JSON.stringify({ duracion_revisada_semanas: nuevaDuracion }),
+            });
+          } catch (err) {
+            alert(err.message);
+          }
+          loadCronogramaRevisado();
+        };
+        handleR.addEventListener('pointermove', onMove);
+        handleR.addEventListener('pointerup', onUp);
+      });
+    }
+
+    wrap.appendChild(row);
+  });
+
+  target.appendChild(wrap);
+}
+
+function setupSubtabsCronograma() {
+  $$('.subtab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      $$('.subtab').forEach((x) => x.classList.remove('active'));
+      $$('.subview').forEach((x) => x.classList.remove('active'));
+      tab.classList.add('active');
+      $(`#sub-${tab.dataset.subview}`).classList.add('active');
+      if (tab.dataset.subview === 'proyectado') loadCronograma();
+      if (tab.dataset.subview === 'real') loadCronogramaReal();
+      if (tab.dataset.subview === 'revisado') loadCronogramaRevisado();
+    });
+  });
 }
 
 function fillFormTarea(t) {
@@ -691,6 +1095,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupFormCompra();
   setupBuscadorMateriales();
   setupBuscadorComputo();
+  setupSubtabsCronograma();
   setupFormTarea();
   setupFormRubro();
   setupFormProyecto();
