@@ -113,6 +113,31 @@ function setupBuscadorComputo() {
   });
 }
 
+function setupGenerarTareasDesdeComputo() {
+  const btn = $('#btn-generar-tareas');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const msg = $('#computo-sync-msg');
+    btn.disabled = true;
+    msg.textContent = 'Generando...';
+    msg.className = 'form-msg';
+    try {
+      const data = await api('/api/cronograma/generar-desde-computo', { method: 'POST' });
+      msg.textContent = `Listo: ${data.tareas_creadas} tarea(s) creada(s), ${data.tareas_actualizadas} actualizada(s).`;
+      msg.className = 'form-msg ok';
+      tareasCache = data.tareas;
+      if ($('#view-cronograma').classList.contains('active')) {
+        renderGanttSimple($('#gantt-target'), data.tareas);
+      }
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.className = 'form-msg error';
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
 // ---------------- Gráficos (canvas nativo, sin librerías externas) ----------------
 function niceNumber(val) {
   if (val <= 0) return 1;
@@ -1095,6 +1120,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupFormCompra();
   setupBuscadorMateriales();
   setupBuscadorComputo();
+  setupGenerarTareasDesdeComputo();
   setupSubtabsCronograma();
   setupFormTarea();
   setupFormRubro();
