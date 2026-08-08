@@ -115,6 +115,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.post_proyecto()
         if path == "/api/compras":
             return self.post_compra()
+        if path == "/api/cronograma/generar-desde-computo":
+            return self.generar_tareas_desde_computo()
         if path == "/api/cronograma":
             return self.post_tarea()
         m = re.match(r"^/api/archivos/(.+)$", path)
@@ -292,15 +294,74 @@ class Handler(BaseHTTPRequestHandler):
             "detalle_materiales": detalle_materiales,
         })
 
-    def get_cronograma(self):
-        conn = db.get_conn()
+    def _calcular_cronograma(self, conn):
+        """Recalcula el CPM proyectado. No abre/cierra la conexión (la recibe ya abierta)
+        para poder reusarla desde endpoints que además modifican datos antes de responder."""
         tareas = db.rows_to_dicts(conn.execute("SELECT * FROM tareas ORDER BY codigo").fetchall())
         proyecto = conn.execute("SELECT fecha_inicio FROM proyecto WHERE id = 1").fetchone()
-        conn.close()
         fecha_inicio = datetime.date.fromisoformat(proyecto["fecha_inicio"]) if proyecto and proyecto["fecha_inicio"] else datetime.date.today()
-        resultado, error = cpm.compute_cpm(tareas, fecha_inicio)
+        return cpm.compute_cpm(tareas, fecha_inicio)
+
+    def get_cronograma(self):
+        conn = db.get_conn()
+        resultado, error = self._calcular_cronograma(conn)
+        conn.close()
         if error:
             return self._send_error_json(error, 422)
+        self._send_json(resultado)
+
+    def _sincronizar_tareas_desde_computo(self, conn):
+        """Crea/actualiza tareas del cronograma a partir de los ítems de obra
+        cargados en Cómputo por ítem. Cada ítem queda vinculado a su tarea vía
+        item_codigo. Si el ítem ya tiene una tarea vinculada, sólo le actualiza
+        el nombre (respeta duración/predecesoras/fechas que el usuario haya
+        cargado a mano). Si es nuevo, crea una tarea con duración provisoria de
+        1 semana para que el usuario la ajuste. No borra ni toca tareas que no
+        estén vinculadas a ningún ítem (las cargadas a mano quedan intactas)."""
+        items = db.rows_to_dicts(conn.execute(
+            "SELECT codigo, descripcion FROM computo_items ORDER BY codigo"
+        ).fetchall())
+        if not items:
+            return 0, 0, "No hay ítems cargados en Cómputo por ítem todavía."
+
+        existentes = db.rows_to_dicts(conn.execute(
+            "SELECT id, codigo, nombre, item_codigo FROM tareas"
+        ).fetchall())
+        por_item = {t["item_codigo"]: t for t in existentes if t["item_codigo"]}
+        siguiente_codigo = max([t["codigo"] for t in existentes] + [0]) + 1
+
+        creadas = 0
+        actualizadas = 0
+        for it in items:
+            existente = por_item.get(it["codigo"])
+            if existente:
+                if existente["nombre"] != it["descripcion"]:
+                    conn.execute("UPDATE tareas SET nombre = ? WHERE id = ?", (it["descripcion"], existente["id"]))
+                    actualizadas += 1
+            else:
+                conn.execute(
+                    "INSERT INTO tareas (codigo, nombre, duracion_semanas, item_codigo) VALUES (?, ?, ?, ?)",
+                    (siguiente_codigo, it["descripcion"], 1, it["codigo"]),
+                )
+                siguiente_codigo += 1
+                creadas += 1
+
+        return creadas, actualizadas, None
+
+    def generar_tareas_desde_computo(self):
+        conn = db.get_conn()
+        try:
+            creadas, actualizadas, error = self._sincronizar_tareas_desde_computo(conn)
+            if error:
+                return self._send_error_json(error, 422)
+            conn.commit()
+            resultado, error_cpm = self._calcular_cronograma(conn)
+        finally:
+            conn.close()
+        if error_cpm:
+            return self._send_error_json(error_cpm, 422)
+        resultado["tareas_creadas"] = creadas
+        resultado["tareas_actualizadas"] = actualizadas
         self._send_json(resultado)
 
     def post_tarea(self):
@@ -487,6 +548,12 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 resultado["items_importados"] = len(items)
                 resultado["avisos"] = avisos
+                # Sincroniza el cronograma con el cómputo recién importado: crea una
+                # tarea nueva por cada ítem que todavía no tiene una vinculada, y
+                # actualiza el nombre de las que ya existían. No borra tareas.
+                creadas, actualizadas, _err_sync = self._sincronizar_tareas_desde_computo(conn)
+                resultado["tareas_creadas"] = creadas
+                resultado["tareas_actualizadas"] = actualizadas
 
             conn.execute(
                 "INSERT OR REPLACE INTO archivos_fuente (nombre, contenido, actualizado_en) VALUES (?, ?, ?)",

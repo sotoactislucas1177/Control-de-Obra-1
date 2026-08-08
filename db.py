@@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS tareas (
     nombre TEXT,
     duracion_semanas REAL DEFAULT 1,
     predecesora1 INTEGER,
-    predecesora2 INTEGER
+    predecesora2 INTEGER,
+    fecha_inicio_real TEXT,
+    fecha_fin_real TEXT,
+    duracion_revisada_semanas REAL,
+    item_codigo TEXT
 );
 
 CREATE TABLE IF NOT EXISTS archivos_fuente (
@@ -76,9 +80,29 @@ def get_conn():
     return conn
 
 
+# Columnas que en algún momento se sumaron a "tareas" pero que una base de
+# datos vieja (creada con una versión anterior de SCHEMA) puede no tener
+# todavía. init_db() las agrega si faltan, así nunca se rompe un endpoint
+# por "no such column" en una base ya existente.
+COLUMNAS_TAREAS_OPCIONALES = {
+    "fecha_inicio_real": "TEXT",
+    "fecha_fin_real": "TEXT",
+    "duracion_revisada_semanas": "REAL",
+    "item_codigo": "TEXT",
+}
+
+
+def _migrar_tareas(conn):
+    existentes = {row["name"] for row in conn.execute("PRAGMA table_info(tareas)").fetchall()}
+    for columna, tipo in COLUMNAS_TAREAS_OPCIONALES.items():
+        if columna not in existentes:
+            conn.execute(f"ALTER TABLE tareas ADD COLUMN {columna} {tipo}")
+
+
 def init_db():
     conn = get_conn()
     conn.executescript(SCHEMA)
+    _migrar_tareas(conn)
     conn.commit()
     conn.close()
 

@@ -1,0 +1,226 @@
+diff --git a/db.py b/db.py
+index 6d5235e..eaf598f 100644
+--- a/db.py
++++ b/db.py
+@@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS tareas (
+     nombre TEXT,
+     duracion_semanas REAL DEFAULT 1,
+     predecesora1 INTEGER,
+-    predecesora2 INTEGER
++    predecesora2 INTEGER,
++    fecha_inicio_real TEXT,
++    fecha_fin_real TEXT,
++    duracion_revisada_semanas REAL,
++    item_codigo TEXT
+ );
+ 
+ CREATE TABLE IF NOT EXISTS archivos_fuente (
+@@ -76,9 +80,29 @@ def get_conn():
+     return conn
+ 
+ 
++# Columnas que en algún momento se sumaron a "tareas" pero que una base de
++# datos vieja (creada con una versión anterior de SCHEMA) puede no tener
++# todavía. init_db() las agrega si faltan, así nunca se rompe un endpoint
++# por "no such column" en una base ya existente.
++COLUMNAS_TAREAS_OPCIONALES = {
++    "fecha_inicio_real": "TEXT",
++    "fecha_fin_real": "TEXT",
++    "duracion_revisada_semanas": "REAL",
++    "item_codigo": "TEXT",
++}
++
++
++def _migrar_tareas(conn):
++    existentes = {row["name"] for row in conn.execute("PRAGMA table_info(tareas)").fetchall()}
++    for columna, tipo in COLUMNAS_TAREAS_OPCIONALES.items():
++        if columna not in existentes:
++            conn.execute(f"ALTER TABLE tareas ADD COLUMN {columna} {tipo}")
++
++
+ def init_db():
+     conn = get_conn()
+     conn.executescript(SCHEMA)
++    _migrar_tareas(conn)
+     conn.commit()
+     conn.close()
+ 
+diff --git a/server.py b/server.py
+index 3212134..c545885 100644
+--- a/server.py
++++ b/server.py
+@@ -115,6 +115,8 @@ class Handler(BaseHTTPRequestHandler):
+             return self.post_proyecto()
+         if path == "/api/compras":
+             return self.post_compra()
++        if path == "/api/cronograma/generar-desde-computo":
++            return self.generar_tareas_desde_computo()
+         if path == "/api/cronograma":
+             return self.post_tarea()
+         m = re.match(r"^/api/archivos/(.+)$", path)
+@@ -292,17 +294,76 @@ class Handler(BaseHTTPRequestHandler):
+             "detalle_materiales": detalle_materiales,
+         })
+ 
+-    def get_cronograma(self):
+-        conn = db.get_conn()
++    def _calcular_cronograma(self, conn):
++        """Recalcula el CPM proyectado. No abre/cierra la conexión (la recibe ya abierta)
++        para poder reusarla desde endpoints que además modifican datos antes de responder."""
+         tareas = db.rows_to_dicts(conn.execute("SELECT * FROM tareas ORDER BY codigo").fetchall())
+         proyecto = conn.execute("SELECT fecha_inicio FROM proyecto WHERE id = 1").fetchone()
+-        conn.close()
+         fecha_inicio = datetime.date.fromisoformat(proyecto["fecha_inicio"]) if proyecto and proyecto["fecha_inicio"] else datetime.date.today()
+-        resultado, error = cpm.compute_cpm(tareas, fecha_inicio)
++        return cpm.compute_cpm(tareas, fecha_inicio)
++
++    def get_cronograma(self):
++        conn = db.get_conn()
++        resultado, error = self._calcular_cronograma(conn)
++        conn.close()
+         if error:
+             return self._send_error_json(error, 422)
+         self._send_json(resultado)
+ 
++    def _sincronizar_tareas_desde_computo(self, conn):
++        """Crea/actualiza tareas del cronograma a partir de los ítems de obra
++        cargados en Cómputo por ítem. Cada ítem queda vinculado a su tarea vía
++        item_codigo. Si el ítem ya tiene una tarea vinculada, sólo le actualiza
++        el nombre (respeta duración/predecesoras/fechas que el usuario haya
++        cargado a mano). Si es nuevo, crea una tarea con duración provisoria de
++        1 semana para que el usuario la ajuste. No borra ni toca tareas que no
++        estén vinculadas a ningún ítem (las cargadas a mano quedan intactas)."""
++        items = db.rows_to_dicts(conn.execute(
++            "SELECT codigo, descripcion FROM computo_items ORDER BY codigo"
++        ).fetchall())
++        if not items:
++            return 0, 0, "No hay ítems cargados en Cómputo por ítem todavía."
++
++        existentes = db.rows_to_dicts(conn.execute(
++            "SELECT id, codigo, nombre, item_codigo FROM tareas"
++        ).fetchall())
++        por_item = {t["item_codigo"]: t for t in existentes if t["item_codigo"]}
++        siguiente_codigo = max([t["codigo"] for t in existentes] + [0]) + 1
++
++        creadas = 0
++        actualizadas = 0
++        for it in items:
++            existente = por_item.get(it["codigo"])
++            if existente:
++                if existente["nombre"] != it["descripcion"]:
++                    conn.execute("UPDATE tareas SET nombre = ? WHERE id = ?", (it["descripcion"], existente["id"]))
++                    actualizadas += 1
++            else:
++                conn.execute(
++                    "INSERT INTO tareas (codigo, nombre, duracion_semanas, item_codigo) VALUES (?, ?, ?, ?)",
++                    (siguiente_codigo, it["descripcion"], 1, it["codigo"]),
++                )
++                siguiente_codigo += 1
++                creadas += 1
++
++        return creadas, actualizadas, None
++
++    def generar_tareas_desde_computo(self):
++        conn = db.get_conn()
++        try:
++            creadas, actualizadas, error = self._sincronizar_tareas_desde_computo(conn)
++            if error:
++                return self._send_error_json(error, 422)
++            conn.commit()
++            resultado, error_cpm = self._calcular_cronograma(conn)
++        finally:
++            conn.close()
++        if error_cpm:
++            return self._send_error_json(error_cpm, 422)
++        resultado["tareas_creadas"] = creadas
++        resultado["tareas_actualizadas"] = actualizadas
++        self._send_json(resultado)
++
+     def post_tarea(self):
+         data = self._read_json_body()
+         conn = db.get_conn()
+@@ -487,6 +548,12 @@ class Handler(BaseHTTPRequestHandler):
+                     )
+                 resultado["items_importados"] = len(items)
+                 resultado["avisos"] = avisos
++                # Sincroniza el cronograma con el cómputo recién importado: crea una
++                # tarea nueva por cada ítem que todavía no tiene una vinculada, y
++                # actualiza el nombre de las que ya existían. No borra tareas.
++                creadas, actualizadas, _err_sync = self._sincronizar_tareas_desde_computo(conn)
++                resultado["tareas_creadas"] = creadas
++                resultado["tareas_actualizadas"] = actualizadas
+ 
+             conn.execute(
+                 "INSERT OR REPLACE INTO archivos_fuente (nombre, contenido, actualizado_en) VALUES (?, ?, ?)",
+diff --git a/static/app.js b/static/app.js
+index 0009e88..a7d67a6 100644
+--- a/static/app.js
++++ b/static/app.js
+@@ -113,6 +113,31 @@ function setupBuscadorComputo() {
+   });
+ }
+ 
++function setupGenerarTareasDesdeComputo() {
++  const btn = $('#btn-generar-tareas');
++  if (!btn) return;
++  btn.addEventListener('click', async () => {
++    const msg = $('#computo-sync-msg');
++    btn.disabled = true;
++    msg.textContent = 'Generando...';
++    msg.className = 'form-msg';
++    try {
++      const data = await api('/api/cronograma/generar-desde-computo', { method: 'POST' });
++      msg.textContent = `Listo: ${data.tareas_creadas} tarea(s) creada(s), ${data.tareas_actualizadas} actualizada(s).`;
++      msg.className = 'form-msg ok';
++      tareasCache = data.tareas;
++      if ($('#view-cronograma').classList.contains('active')) {
++        renderGanttSimple($('#gantt-target'), data.tareas);
++      }
++    } catch (err) {
++      msg.textContent = err.message;
++      msg.className = 'form-msg error';
++    } finally {
++      btn.disabled = false;
++    }
++  });
++}
++
+ // ---------------- Gráficos (canvas nativo, sin librerías externas) ----------------
+ function niceNumber(val) {
+   if (val <= 0) return 1;
+@@ -1095,6 +1120,7 @@ document.addEventListener('DOMContentLoaded', () => {
+   setupFormCompra();
+   setupBuscadorMateriales();
+   setupBuscadorComputo();
++  setupGenerarTareasDesdeComputo();
+   setupSubtabsCronograma();
+   setupFormTarea();
+   setupFormRubro();
+diff --git a/static/index.html b/static/index.html
+index 13ad6a0..e69ca18 100644
+--- a/static/index.html
++++ b/static/index.html
+@@ -161,6 +161,11 @@
+         <p class="muted">Desglose de materiales, mano de obra y subcontratos que componen cada ítem de obra. Hacé clic en un ítem para ver el detalle.</p>
+       </header>
+       <div class="card">
++        <div class="computo-sync">
++          <button type="button" class="btn-secondary" id="btn-generar-tareas">Generar/actualizar tareas del cronograma</button>
++          <span class="form-msg" id="computo-sync-msg"></span>
++        </div>
++        <p class="muted">Crea una tarea en el Cronograma por cada ítem nuevo (con 1 semana de duración provisoria, para que la ajustes ahí) y actualiza el nombre de las que ya estaban vinculadas a un ítem. No borra tareas existentes.</p>
+         <input type="search" id="buscador-computo" placeholder="Buscar ítem por código o descripción..." class="search-input">
+         <div id="computo-lista"></div>
+       </div>
+diff --git a/static/style.css b/static/style.css
+index 28ee358..3f1a859 100644
+--- a/static/style.css
++++ b/static/style.css
+@@ -191,6 +191,7 @@ input:focus, .search-input:focus { outline: none; border-color: var(--accent); b
+ .btn-danger:hover { background: var(--red); color: white; }
+ 
+ .form-msg { margin-left: 8px; font-size: 13px; }
++.computo-sync { display: flex; align-items: center; margin-bottom: 8px; }
+ .form-msg.ok { color: var(--green); }
+ .form-msg.error { color: var(--red); }
+ 
