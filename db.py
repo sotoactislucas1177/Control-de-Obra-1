@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS tareas (
     fecha_inicio_real TEXT,
     fecha_fin_real TEXT,
     duracion_revisada_semanas REAL,
-    item_codigo TEXT
+    rubro_codigo INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS archivos_fuente (
@@ -88,7 +88,7 @@ COLUMNAS_TAREAS_OPCIONALES = {
     "fecha_inicio_real": "TEXT",
     "fecha_fin_real": "TEXT",
     "duracion_revisada_semanas": "REAL",
-    "item_codigo": "TEXT",
+    "rubro_codigo": "INTEGER",
 }
 
 

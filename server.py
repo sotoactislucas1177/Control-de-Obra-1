@@ -115,8 +115,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.post_proyecto()
         if path == "/api/compras":
             return self.post_compra()
-        if path == "/api/cronograma/generar-desde-computo":
-            return self.generar_tareas_desde_computo()
+        if path == "/api/cronograma/generar-desde-rubros":
+            return self.generar_tareas_desde_rubros()
         if path == "/api/cronograma":
             return self.post_tarea()
         m = re.match(r"^/api/archivos/(.+)$", path)
@@ -194,6 +194,9 @@ class Handler(BaseHTTPRequestHandler):
              float(data.get("materiales") or 0), float(data.get("mano_obra") or 0),
              float(data.get("subcontratos") or 0), codigo),
         )
+        # El Cronograma tiene que reflejar siempre a Rubros y presupuesto: si
+        # cambió la descripción, la tarea vinculada se renombra sola.
+        self._sincronizar_tareas_desde_rubros(conn)
         conn.commit()
         conn.close()
         self.get_rubros()
@@ -310,50 +313,50 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(error, 422)
         self._send_json(resultado)
 
-    def _sincronizar_tareas_desde_computo(self, conn):
-        """Crea/actualiza tareas del cronograma a partir de los ítems de obra
-        cargados en Cómputo por ítem. Cada ítem queda vinculado a su tarea vía
-        item_codigo. Si el ítem ya tiene una tarea vinculada, sólo le actualiza
-        el nombre (respeta duración/predecesoras/fechas que el usuario haya
-        cargado a mano). Si es nuevo, crea una tarea con duración provisoria de
-        1 semana para que el usuario la ajuste. No borra ni toca tareas que no
-        estén vinculadas a ningún ítem (las cargadas a mano quedan intactas)."""
-        items = db.rows_to_dicts(conn.execute(
-            "SELECT codigo, descripcion FROM computo_items ORDER BY codigo"
-        ).fetchall())
-        if not items:
-            return 0, 0, "No hay ítems cargados en Cómputo por ítem todavía."
+    def _sincronizar_tareas_desde_rubros(self, conn):
+        """Hace que el Cronograma sea un espejo de Rubros y presupuesto: cada
+        rubro tiene que tener exactamente una tarea (se crea si falta, se le
+        actualiza el nombre si el rubro cambió de descripción), y cualquier
+        tarea que no corresponda a un rubro que exista hoy se borra. Se llama
+        automáticamente cada vez que se edita un rubro o se reimporta
+        Presupuesto.TXT, y también se puede disparar a mano."""
+        rubros = db.rows_to_dicts(conn.execute("SELECT codigo, descripcion FROM rubros ORDER BY codigo").fetchall())
+        rubro_codigos_actuales = {r["codigo"] for r in rubros}
 
-        existentes = db.rows_to_dicts(conn.execute(
-            "SELECT id, codigo, nombre, item_codigo FROM tareas"
-        ).fetchall())
-        por_item = {t["item_codigo"]: t for t in existentes if t["item_codigo"]}
-        siguiente_codigo = max([t["codigo"] for t in existentes] + [0]) + 1
+        tareas = db.rows_to_dicts(conn.execute("SELECT id, codigo, nombre, rubro_codigo FROM tareas").fetchall())
+
+        eliminadas = 0
+        for t in tareas:
+            if t["rubro_codigo"] is None or t["rubro_codigo"] not in rubro_codigos_actuales:
+                conn.execute("DELETE FROM tareas WHERE id = ?", (t["id"],))
+                eliminadas += 1
+
+        vigentes = [t for t in tareas if t["rubro_codigo"] is not None and t["rubro_codigo"] in rubro_codigos_actuales]
+        por_rubro = {t["rubro_codigo"]: t for t in vigentes}
+        siguiente_codigo = max([t["codigo"] for t in tareas] + [0]) + 1
 
         creadas = 0
         actualizadas = 0
-        for it in items:
-            existente = por_item.get(it["codigo"])
+        for r in rubros:
+            existente = por_rubro.get(r["codigo"])
             if existente:
-                if existente["nombre"] != it["descripcion"]:
-                    conn.execute("UPDATE tareas SET nombre = ? WHERE id = ?", (it["descripcion"], existente["id"]))
+                if existente["nombre"] != r["descripcion"]:
+                    conn.execute("UPDATE tareas SET nombre = ? WHERE id = ?", (r["descripcion"], existente["id"]))
                     actualizadas += 1
             else:
                 conn.execute(
-                    "INSERT INTO tareas (codigo, nombre, duracion_semanas, item_codigo) VALUES (?, ?, ?, ?)",
-                    (siguiente_codigo, it["descripcion"], 1, it["codigo"]),
+                    "INSERT INTO tareas (codigo, nombre, duracion_semanas, rubro_codigo) VALUES (?, ?, ?, ?)",
+                    (siguiente_codigo, r["descripcion"], 1, r["codigo"]),
                 )
                 siguiente_codigo += 1
                 creadas += 1
 
-        return creadas, actualizadas, None
+        return creadas, actualizadas, eliminadas
 
-    def generar_tareas_desde_computo(self):
+    def generar_tareas_desde_rubros(self):
         conn = db.get_conn()
         try:
-            creadas, actualizadas, error = self._sincronizar_tareas_desde_computo(conn)
-            if error:
-                return self._send_error_json(error, 422)
+            creadas, actualizadas, eliminadas = self._sincronizar_tareas_desde_rubros(conn)
             conn.commit()
             resultado, error_cpm = self._calcular_cronograma(conn)
         finally:
@@ -362,6 +365,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_error_json(error_cpm, 422)
         resultado["tareas_creadas"] = creadas
         resultado["tareas_actualizadas"] = actualizadas
+        resultado["tareas_eliminadas"] = eliminadas
         self._send_json(resultado)
 
     def post_tarea(self):
@@ -504,6 +508,13 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 resultado["rubros_importados"] = len(rubros)
                 resultado["avisos"] = avisos
+                # El Cronograma es un espejo de Rubros y presupuesto: al reimportar,
+                # crea tareas para los rubros nuevos, renombra las que cambiaron de
+                # descripción, y borra las que quedaron sin rubro.
+                creadas, actualizadas, eliminadas = self._sincronizar_tareas_desde_rubros(conn)
+                resultado["tareas_creadas"] = creadas
+                resultado["tareas_actualizadas"] = actualizadas
+                resultado["tareas_eliminadas"] = eliminadas
 
             elif nombre == "Materiales.txt":
                 materiales, avisos = parsers.parse_materiales(contenido.encode("utf-8"))
@@ -548,12 +559,6 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 resultado["items_importados"] = len(items)
                 resultado["avisos"] = avisos
-                # Sincroniza el cronograma con el cómputo recién importado: crea una
-                # tarea nueva por cada ítem que todavía no tiene una vinculada, y
-                # actualiza el nombre de las que ya existían. No borra tareas.
-                creadas, actualizadas, _err_sync = self._sincronizar_tareas_desde_computo(conn)
-                resultado["tareas_creadas"] = creadas
-                resultado["tareas_actualizadas"] = actualizadas
 
             conn.execute(
                 "INSERT OR REPLACE INTO archivos_fuente (nombre, contenido, actualizado_en) VALUES (?, ?, ?)",

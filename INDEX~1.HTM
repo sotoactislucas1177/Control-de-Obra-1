@@ -122,9 +122,13 @@
     <section id="view-rubros" class="view">
       <header class="view-header">
         <h1>Rubros y presupuesto</h1>
-        <p class="muted">Desglose del presupuesto contratado por rubro.</p>
+        <p class="muted">Desglose del presupuesto contratado por rubro. El Cronograma se sincroniza solo con esta lista: cada rubro tiene su tarea en el Gantt, y si un rubro se borra o cambia de nombre, la tarea se borra o se renombra sola.</p>
       </header>
       <div class="card">
+        <div class="computo-sync">
+          <button type="button" class="btn-secondary" id="btn-generar-tareas">Sincronizar cronograma con rubros ahora</button>
+          <span class="form-msg" id="rubros-sync-msg"></span>
+        </div>
         <div class="table-wrap">
           <table id="tabla-rubros">
             <thead>
@@ -161,11 +165,6 @@
         <p class="muted">Desglose de materiales, mano de obra y subcontratos que componen cada ítem de obra. Hacé clic en un ítem para ver el detalle.</p>
       </header>
       <div class="card">
-        <div class="computo-sync">
-          <button type="button" class="btn-secondary" id="btn-generar-tareas">Generar/actualizar tareas del cronograma</button>
-          <span class="form-msg" id="computo-sync-msg"></span>
-        </div>
-        <p class="muted">Crea una tarea en el Cronograma por cada ítem nuevo (con 1 semana de duración provisoria, para que la ajustes ahí) y actualiza el nombre de las que ya estaban vinculadas a un ítem. No borra tareas existentes.</p>
         <input type="search" id="buscador-computo" placeholder="Buscar ítem por código o descripción..." class="search-input">
         <div id="computo-lista"></div>
       </div>

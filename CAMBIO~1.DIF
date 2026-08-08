@@ -1,5 +1,5 @@
 diff --git a/db.py b/db.py
-index 6d5235e..eaf598f 100644
+index 6d5235e..797e157 100644
 --- a/db.py
 +++ b/db.py
 @@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS tareas (
@@ -11,7 +11,7 @@ index 6d5235e..eaf598f 100644
 +    fecha_inicio_real TEXT,
 +    fecha_fin_real TEXT,
 +    duracion_revisada_semanas REAL,
-+    item_codigo TEXT
++    rubro_codigo INTEGER
  );
  
  CREATE TABLE IF NOT EXISTS archivos_fuente (
@@ -27,7 +27,7 @@ index 6d5235e..eaf598f 100644
 +    "fecha_inicio_real": "TEXT",
 +    "fecha_fin_real": "TEXT",
 +    "duracion_revisada_semanas": "REAL",
-+    "item_codigo": "TEXT",
++    "rubro_codigo": "INTEGER",
 +}
 +
 +
@@ -46,19 +46,29 @@ index 6d5235e..eaf598f 100644
      conn.close()
  
 diff --git a/server.py b/server.py
-index 3212134..c545885 100644
+index 3212134..502702b 100644
 --- a/server.py
 +++ b/server.py
 @@ -115,6 +115,8 @@ class Handler(BaseHTTPRequestHandler):
              return self.post_proyecto()
          if path == "/api/compras":
              return self.post_compra()
-+        if path == "/api/cronograma/generar-desde-computo":
-+            return self.generar_tareas_desde_computo()
++        if path == "/api/cronograma/generar-desde-rubros":
++            return self.generar_tareas_desde_rubros()
          if path == "/api/cronograma":
              return self.post_tarea()
          m = re.match(r"^/api/archivos/(.+)$", path)
-@@ -292,17 +294,76 @@ class Handler(BaseHTTPRequestHandler):
+@@ -192,6 +194,9 @@ class Handler(BaseHTTPRequestHandler):
+              float(data.get("materiales") or 0), float(data.get("mano_obra") or 0),
+              float(data.get("subcontratos") or 0), codigo),
+         )
++        # El Cronograma tiene que reflejar siempre a Rubros y presupuesto: si
++        # cambió la descripción, la tarea vinculada se renombra sola.
++        self._sincronizar_tareas_desde_rubros(conn)
+         conn.commit()
+         conn.close()
+         self.get_rubros()
+@@ -292,17 +297,77 @@ class Handler(BaseHTTPRequestHandler):
              "detalle_materiales": detalle_materiales,
          })
  
@@ -82,50 +92,50 @@ index 3212134..c545885 100644
              return self._send_error_json(error, 422)
          self._send_json(resultado)
  
-+    def _sincronizar_tareas_desde_computo(self, conn):
-+        """Crea/actualiza tareas del cronograma a partir de los ítems de obra
-+        cargados en Cómputo por ítem. Cada ítem queda vinculado a su tarea vía
-+        item_codigo. Si el ítem ya tiene una tarea vinculada, sólo le actualiza
-+        el nombre (respeta duración/predecesoras/fechas que el usuario haya
-+        cargado a mano). Si es nuevo, crea una tarea con duración provisoria de
-+        1 semana para que el usuario la ajuste. No borra ni toca tareas que no
-+        estén vinculadas a ningún ítem (las cargadas a mano quedan intactas)."""
-+        items = db.rows_to_dicts(conn.execute(
-+            "SELECT codigo, descripcion FROM computo_items ORDER BY codigo"
-+        ).fetchall())
-+        if not items:
-+            return 0, 0, "No hay ítems cargados en Cómputo por ítem todavía."
++    def _sincronizar_tareas_desde_rubros(self, conn):
++        """Hace que el Cronograma sea un espejo de Rubros y presupuesto: cada
++        rubro tiene que tener exactamente una tarea (se crea si falta, se le
++        actualiza el nombre si el rubro cambió de descripción), y cualquier
++        tarea que no corresponda a un rubro que exista hoy se borra. Se llama
++        automáticamente cada vez que se edita un rubro o se reimporta
++        Presupuesto.TXT, y también se puede disparar a mano."""
++        rubros = db.rows_to_dicts(conn.execute("SELECT codigo, descripcion FROM rubros ORDER BY codigo").fetchall())
++        rubro_codigos_actuales = {r["codigo"] for r in rubros}
 +
-+        existentes = db.rows_to_dicts(conn.execute(
-+            "SELECT id, codigo, nombre, item_codigo FROM tareas"
-+        ).fetchall())
-+        por_item = {t["item_codigo"]: t for t in existentes if t["item_codigo"]}
-+        siguiente_codigo = max([t["codigo"] for t in existentes] + [0]) + 1
++        tareas = db.rows_to_dicts(conn.execute("SELECT id, codigo, nombre, rubro_codigo FROM tareas").fetchall())
++
++        eliminadas = 0
++        for t in tareas:
++            if t["rubro_codigo"] is None or t["rubro_codigo"] not in rubro_codigos_actuales:
++                conn.execute("DELETE FROM tareas WHERE id = ?", (t["id"],))
++                eliminadas += 1
++
++        vigentes = [t for t in tareas if t["rubro_codigo"] is not None and t["rubro_codigo"] in rubro_codigos_actuales]
++        por_rubro = {t["rubro_codigo"]: t for t in vigentes}
++        siguiente_codigo = max([t["codigo"] for t in tareas] + [0]) + 1
 +
 +        creadas = 0
 +        actualizadas = 0
-+        for it in items:
-+            existente = por_item.get(it["codigo"])
++        for r in rubros:
++            existente = por_rubro.get(r["codigo"])
 +            if existente:
-+                if existente["nombre"] != it["descripcion"]:
-+                    conn.execute("UPDATE tareas SET nombre = ? WHERE id = ?", (it["descripcion"], existente["id"]))
++                if existente["nombre"] != r["descripcion"]:
++                    conn.execute("UPDATE tareas SET nombre = ? WHERE id = ?", (r["descripcion"], existente["id"]))
 +                    actualizadas += 1
 +            else:
 +                conn.execute(
-+                    "INSERT INTO tareas (codigo, nombre, duracion_semanas, item_codigo) VALUES (?, ?, ?, ?)",
-+                    (siguiente_codigo, it["descripcion"], 1, it["codigo"]),
++                    "INSERT INTO tareas (codigo, nombre, duracion_semanas, rubro_codigo) VALUES (?, ?, ?, ?)",
++                    (siguiente_codigo, r["descripcion"], 1, r["codigo"]),
 +                )
 +                siguiente_codigo += 1
 +                creadas += 1
 +
-+        return creadas, actualizadas, None
++        return creadas, actualizadas, eliminadas
 +
-+    def generar_tareas_desde_computo(self):
++    def generar_tareas_desde_rubros(self):
 +        conn = db.get_conn()
 +        try:
-+            creadas, actualizadas, error = self._sincronizar_tareas_desde_computo(conn)
-+            if error:
-+                return self._send_error_json(error, 422)
++            creadas, actualizadas, eliminadas = self._sincronizar_tareas_desde_rubros(conn)
 +            conn.commit()
 +            resultado, error_cpm = self._calcular_cronograma(conn)
 +        finally:
@@ -134,43 +144,54 @@ index 3212134..c545885 100644
 +            return self._send_error_json(error_cpm, 422)
 +        resultado["tareas_creadas"] = creadas
 +        resultado["tareas_actualizadas"] = actualizadas
++        resultado["tareas_eliminadas"] = eliminadas
 +        self._send_json(resultado)
 +
      def post_tarea(self):
          data = self._read_json_body()
          conn = db.get_conn()
-@@ -487,6 +548,12 @@ class Handler(BaseHTTPRequestHandler):
+@@ -443,6 +508,13 @@ class Handler(BaseHTTPRequestHandler):
                      )
-                 resultado["items_importados"] = len(items)
+                 resultado["rubros_importados"] = len(rubros)
                  resultado["avisos"] = avisos
-+                # Sincroniza el cronograma con el cómputo recién importado: crea una
-+                # tarea nueva por cada ítem que todavía no tiene una vinculada, y
-+                # actualiza el nombre de las que ya existían. No borra tareas.
-+                creadas, actualizadas, _err_sync = self._sincronizar_tareas_desde_computo(conn)
++                # El Cronograma es un espejo de Rubros y presupuesto: al reimportar,
++                # crea tareas para los rubros nuevos, renombra las que cambiaron de
++                # descripción, y borra las que quedaron sin rubro.
++                creadas, actualizadas, eliminadas = self._sincronizar_tareas_desde_rubros(conn)
 +                resultado["tareas_creadas"] = creadas
 +                resultado["tareas_actualizadas"] = actualizadas
++                resultado["tareas_eliminadas"] = eliminadas
  
-             conn.execute(
-                 "INSERT OR REPLACE INTO archivos_fuente (nombre, contenido, actualizado_en) VALUES (?, ?, ?)",
+             elif nombre == "Materiales.txt":
+                 materiales, avisos = parsers.parse_materiales(contenido.encode("utf-8"))
 diff --git a/static/app.js b/static/app.js
-index 0009e88..a7d67a6 100644
+index 0009e88..889c7ac 100644
 --- a/static/app.js
 +++ b/static/app.js
-@@ -113,6 +113,31 @@ function setupBuscadorComputo() {
+@@ -521,7 +521,7 @@ function setupFormRubro() {
+     const codigo = payload.codigo;
+     try {
+       await api(`/api/rubros/${codigo}`, { method: 'PUT', body: JSON.stringify(payload) });
+-      msg.textContent = 'Rubro actualizado.';
++      msg.textContent = 'Rubro actualizado. El Cronograma se sincronizó solo.';
+       msg.className = 'form-msg ok';
+       loadRubros();
+     } catch (err) {
+@@ -534,6 +534,31 @@ function setupFormRubro() {
    });
  }
  
-+function setupGenerarTareasDesdeComputo() {
++function setupGenerarTareasDesdeRubros() {
 +  const btn = $('#btn-generar-tareas');
 +  if (!btn) return;
 +  btn.addEventListener('click', async () => {
-+    const msg = $('#computo-sync-msg');
++    const msg = $('#rubros-sync-msg');
 +    btn.disabled = true;
-+    msg.textContent = 'Generando...';
++    msg.textContent = 'Sincronizando...';
 +    msg.className = 'form-msg';
 +    try {
-+      const data = await api('/api/cronograma/generar-desde-computo', { method: 'POST' });
-+      msg.textContent = `Listo: ${data.tareas_creadas} tarea(s) creada(s), ${data.tareas_actualizadas} actualizada(s).`;
++      const data = await api('/api/cronograma/generar-desde-rubros', { method: 'POST' });
++      msg.textContent = `Listo: ${data.tareas_creadas} creada(s), ${data.tareas_actualizadas} actualizada(s), ${data.tareas_eliminadas} eliminada(s).`;
 +      msg.className = 'form-msg ok';
 +      tareasCache = data.tareas;
 +      if ($('#view-cronograma').classList.contains('active')) {
@@ -185,33 +206,36 @@ index 0009e88..a7d67a6 100644
 +  });
 +}
 +
- // ---------------- Gráficos (canvas nativo, sin librerías externas) ----------------
- function niceNumber(val) {
-   if (val <= 0) return 1;
-@@ -1095,6 +1120,7 @@ document.addEventListener('DOMContentLoaded', () => {
-   setupFormCompra();
-   setupBuscadorMateriales();
-   setupBuscadorComputo();
-+  setupGenerarTareasDesdeComputo();
+ // ---------------- Cronograma (HTML/CSS propio, sin librerías externas) ----------------
+ let tareasCache = [];
+ 
+@@ -1098,6 +1123,7 @@ document.addEventListener('DOMContentLoaded', () => {
    setupSubtabsCronograma();
    setupFormTarea();
    setupFormRubro();
++  setupGenerarTareasDesdeRubros();
+   setupFormProyecto();
+   loadProyecto();
+   loadDashboard();
 diff --git a/static/index.html b/static/index.html
-index 13ad6a0..e69ca18 100644
+index 13ad6a0..3c45b11 100644
 --- a/static/index.html
 +++ b/static/index.html
-@@ -161,6 +161,11 @@
-         <p class="muted">Desglose de materiales, mano de obra y subcontratos que componen cada ítem de obra. Hacé clic en un ítem para ver el detalle.</p>
+@@ -122,9 +122,13 @@
+     <section id="view-rubros" class="view">
+       <header class="view-header">
+         <h1>Rubros y presupuesto</h1>
+-        <p class="muted">Desglose del presupuesto contratado por rubro.</p>
++        <p class="muted">Desglose del presupuesto contratado por rubro. El Cronograma se sincroniza solo con esta lista: cada rubro tiene su tarea en el Gantt, y si un rubro se borra o cambia de nombre, la tarea se borra o se renombra sola.</p>
        </header>
        <div class="card">
 +        <div class="computo-sync">
-+          <button type="button" class="btn-secondary" id="btn-generar-tareas">Generar/actualizar tareas del cronograma</button>
-+          <span class="form-msg" id="computo-sync-msg"></span>
++          <button type="button" class="btn-secondary" id="btn-generar-tareas">Sincronizar cronograma con rubros ahora</button>
++          <span class="form-msg" id="rubros-sync-msg"></span>
 +        </div>
-+        <p class="muted">Crea una tarea en el Cronograma por cada ítem nuevo (con 1 semana de duración provisoria, para que la ajustes ahí) y actualiza el nombre de las que ya estaban vinculadas a un ítem. No borra tareas existentes.</p>
-         <input type="search" id="buscador-computo" placeholder="Buscar ítem por código o descripción..." class="search-input">
-         <div id="computo-lista"></div>
-       </div>
+         <div class="table-wrap">
+           <table id="tabla-rubros">
+             <thead>
 diff --git a/static/style.css b/static/style.css
 index 28ee358..3f1a859 100644
 --- a/static/style.css
