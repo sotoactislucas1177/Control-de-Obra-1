@@ -113,31 +113,6 @@ function setupBuscadorComputo() {
   });
 }
 
-function setupGenerarTareasDesdeComputo() {
-  const btn = $('#btn-generar-tareas');
-  if (!btn) return;
-  btn.addEventListener('click', async () => {
-    const msg = $('#computo-sync-msg');
-    btn.disabled = true;
-    msg.textContent = 'Generando...';
-    msg.className = 'form-msg';
-    try {
-      const data = await api('/api/cronograma/generar-desde-computo', { method: 'POST' });
-      msg.textContent = `Listo: ${data.tareas_creadas} tarea(s) creada(s), ${data.tareas_actualizadas} actualizada(s).`;
-      msg.className = 'form-msg ok';
-      tareasCache = data.tareas;
-      if ($('#view-cronograma').classList.contains('active')) {
-        renderGanttSimple($('#gantt-target'), data.tareas);
-      }
-    } catch (err) {
-      msg.textContent = err.message;
-      msg.className = 'form-msg error';
-    } finally {
-      btn.disabled = false;
-    }
-  });
-}
-
 // ---------------- Gráficos (canvas nativo, sin librerías externas) ----------------
 function niceNumber(val) {
   if (val <= 0) return 1;
@@ -546,7 +521,7 @@ function setupFormRubro() {
     const codigo = payload.codigo;
     try {
       await api(`/api/rubros/${codigo}`, { method: 'PUT', body: JSON.stringify(payload) });
-      msg.textContent = 'Rubro actualizado.';
+      msg.textContent = 'Rubro actualizado. El Cronograma se sincronizó solo.';
       msg.className = 'form-msg ok';
       loadRubros();
     } catch (err) {
@@ -556,6 +531,31 @@ function setupFormRubro() {
   });
   $('#btn-cancelar-rubro').addEventListener('click', () => {
     $('#rubro-edit-card').style.display = 'none';
+  });
+}
+
+function setupGenerarTareasDesdeRubros() {
+  const btn = $('#btn-generar-tareas');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const msg = $('#rubros-sync-msg');
+    btn.disabled = true;
+    msg.textContent = 'Sincronizando...';
+    msg.className = 'form-msg';
+    try {
+      const data = await api('/api/cronograma/generar-desde-rubros', { method: 'POST' });
+      msg.textContent = `Listo: ${data.tareas_creadas} creada(s), ${data.tareas_actualizadas} actualizada(s), ${data.tareas_eliminadas} eliminada(s).`;
+      msg.className = 'form-msg ok';
+      tareasCache = data.tareas;
+      if ($('#view-cronograma').classList.contains('active')) {
+        renderGanttSimple($('#gantt-target'), data.tareas);
+      }
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.className = 'form-msg error';
+    } finally {
+      btn.disabled = false;
+    }
   });
 }
 
@@ -1120,10 +1120,10 @@ document.addEventListener('DOMContentLoaded', () => {
   setupFormCompra();
   setupBuscadorMateriales();
   setupBuscadorComputo();
-  setupGenerarTareasDesdeComputo();
   setupSubtabsCronograma();
   setupFormTarea();
   setupFormRubro();
+  setupGenerarTareasDesdeRubros();
   setupFormProyecto();
   loadProyecto();
   loadDashboard();
